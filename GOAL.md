@@ -1324,6 +1324,7 @@ The project succeeds when it can take a reference image of a suitable manufactur
 * hidden geometry is clearly marked as inferred;
 * output can be exported and reused;
 * reconstruction process can be inspected and reproduced.
+* all evals from [EVAL](EVAL.md) must pass
 
 The defining product principle is:
 
