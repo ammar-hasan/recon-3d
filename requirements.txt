@@ -1,0 +1,12 @@
+numpy<2.1
+opencv-python-headless<4.11
+scikit-image<0.25
+scipy<1.14
+pillow
+pyyaml
+pydantic<2.10
+svgwrite
+vtracer
+rembg
+onnxruntime
+pytest

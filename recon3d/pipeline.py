@@ -1,0 +1,140 @@
+"""End-to-end pipeline orchestrator.
+
+Usage:
+    python -m recon3d.pipeline --image path/to/img.png [--label wheel]
+        [--box x0 y0 x1 y1] [--point x y] [--mask m.png] [--dimension 0.65]
+        [--out projects/run] [--config cfg.yaml]
+"""
+from __future__ import annotations
+
+import argparse
+import datetime
+import json
+import sys
+import traceback
+import uuid
+from pathlib import Path
+
+from .config import PipelineConfig, software_versions
+from .schemas import (InputSpec, RunManifest, SchemaIO, sha256_file)
+
+
+def _ensure_dirs(project_dir: Path) -> None:
+    for sub in ("input", "segmentation", "traces", "geometry", "blender", "validation"):
+        (project_dir / sub).mkdir(parents=True, exist_ok=True)
+
+
+def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
+    from . import (blender_codegen, camera, constraints, construction_plan, crop,
+                   depth, input_manager, operators, preprocess, primitives,
+                   refinement, runner, segmentation, semantic_parts, sketch_graph,
+                   svg_cleanup, validation, vectorize)
+
+    project_dir = Path(spec.output_dir)
+    _ensure_dirs(project_dir)
+
+    manifest = RunManifest(
+        run_id=uuid.uuid4().hex[:12],
+        software=software_versions(),
+        seeds={"pipeline": cfg.seed},
+        started_at=datetime.datetime.now().isoformat(timespec="seconds"),
+        config={},
+    )
+    manifest.config = json.loads(cfg.model_dump_json())
+
+    try:
+        # Stage 1-3: input, segmentation, crop
+        bundle = input_manager.load_input(spec)
+        manifest.input_hashes = {img.path: img.sha256 for img in bundle.images}
+        seg = segmentation.segment(bundle, str(project_dir / "segmentation"), cfg)
+        crop_meta, crop_rgba, crop_mask = crop.make_crop(
+            seg, str(project_dir / "segmentation"), cfg)
+
+        # Stage 4-6: preprocess, vectorize, cleanup
+        layers_img = preprocess.preprocess(crop_rgba, crop_mask,
+                                           str(project_dir / "segmentation"), cfg)
+        layers = vectorize.vectorize(layers_img, str(project_dir / "traces"), cfg)
+        layers = svg_cleanup.cleanup_layers(layers, str(project_dir / "traces"), cfg)
+
+        # Stage 7-10: primitives, constraints, sketch graph, semantic parts
+        prims = primitives.fit_primitives(layers, cfg)
+        cons = constraints.detect_constraints(prims, cfg)
+        graph = sketch_graph.build_sketch_graph(prims, cons)
+        graph = semantic_parts.decompose_parts(graph, crop_rgba, spec, cfg)
+        SchemaIO.save_json(graph, project_dir / "geometry" / "sketch_graph.json")
+        SchemaIO.save_json(
+            graph.model_copy(update={"parts": [], "constraints": []}),
+            project_dir / "geometry" / "fitted_primitives.json")
+
+        # Stage 11-14: camera, depth, operators, plan
+        cam = camera.estimate_camera(graph, seg, crop_meta, spec, cfg)
+        dep = depth.estimate_depth(crop_rgba, crop_mask, graph,
+                                   str(project_dir / "geometry"), cfg)
+        graph = operators.classify_operators(graph, dep, cfg)
+        plan = construction_plan.build_plan(graph, cam, dep, spec, cfg)
+        errors = construction_plan.validate_plan(plan)
+        if errors:
+            raise ValueError("construction plan invalid: " + "; ".join(errors))
+        SchemaIO.save_yaml(plan, project_dir / "geometry" / "construction_plan.yaml")
+
+        # Stage 15-16: Blender generation + execution
+        script = blender_codegen.generate_blender_script(plan, str(project_dir / "blender"), cfg)
+        bman = runner.run_blender(script, str(project_dir), cfg)
+        if not bman.success:
+            raise RuntimeError("blender execution failed: " + "; ".join(bman.errors))
+
+        # Stage 17-18: validation + refinement
+        val = validation.validate_reconstruction(bman, plan, seg, crop_meta,
+                                                 str(project_dir), cfg)
+        plan, bman, val, rlog = refinement.refine(plan, seg, crop_meta,
+                                                  str(project_dir), cfg)
+        SchemaIO.save_yaml(plan, project_dir / "geometry" / "construction_plan.yaml")
+        SchemaIO.save_json(rlog, project_dir / "validation" / "refinement_log.json")
+
+        manifest.status = "success" if val.passed else "partial_success"
+    except Exception as exc:  # noqa: BLE001 - orchestrator must never crash silently
+        manifest.status = "failed_validation"
+        manifest.stage_outputs["error"] = f"{type(exc).__name__}: {exc}"
+        traceback.print_exc()
+    finally:
+        manifest.finished_at = datetime.datetime.now().isoformat(timespec="seconds")
+        SchemaIO.save_json(manifest, project_dir / "manifest.json")
+
+    return manifest
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(prog="recon3d")
+    ap.add_argument("--image", action="append", required=True,
+                    help="input image (repeatable for multiview)")
+    ap.add_argument("--label", default=None, help="target object label")
+    ap.add_argument("--description", default=None)
+    ap.add_argument("--box", nargs=4, type=float, default=None, metavar=("X0", "Y0", "X1", "Y1"))
+    ap.add_argument("--point", nargs=2, type=float, default=None, metavar=("X", "Y"))
+    ap.add_argument("--mask", default=None, help="user-supplied mask")
+    ap.add_argument("--dimension", type=float, default=None, help="known physical size")
+    ap.add_argument("--dimension-axis", default=None)
+    ap.add_argument("--out", default="projects/run")
+    ap.add_argument("--config", default=None)
+    args = ap.parse_args(argv)
+
+    cfg = PipelineConfig.from_yaml(args.config) if args.config else PipelineConfig()
+    spec = InputSpec(
+        image_paths=args.image,
+        description=args.description,
+        target_label=args.label,
+        point=tuple(args.point) if args.point else None,
+        box=tuple(args.box) if args.box else None,
+        mask_path=args.mask,
+        known_dimension=args.dimension,
+        known_dimension_axis=args.dimension_axis,
+        output_dir=args.out,
+    )
+    manifest = run_pipeline(spec, cfg)
+    print(f"status: {manifest.status}")
+    print(f"project: {args.out}")
+    return 0 if manifest.status in ("success", "partial_success") else 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
