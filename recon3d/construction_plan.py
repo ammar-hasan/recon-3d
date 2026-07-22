@@ -18,6 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from . import materials as materials_mod
 from .config import PipelineConfig
 from .part_geometry import (
+    CLOSED_FLAT,
     ELLIPSE_LIKE,
     ObjectFrame,
     graph_bbox,
@@ -39,6 +40,7 @@ from .schemas import (
     MaterialSpec,
     OperatorCategory,
     PlanPart,
+    PrimitiveType,
     SemanticPart,
     SketchGraph,
 )
@@ -84,6 +86,32 @@ def _material_from_appearance(part: SemanticPart) -> MaterialSpec:
     return spec
 
 
+def _frame_bbox(graph: SketchGraph) -> Tuple[float, float, float, float]:
+    """Anchor bbox for the object frame: the true outline extent of the
+    largest fully-closed primitive (the subject). The frame must be centred
+    on the object — object rotation pivots on the frame origin at render
+    time — and its width must match the observed silhouette, so stray
+    detail fragments and outlier arcs must not stretch or shift it. Arcs
+    are excluded: their parametric outline is not their true extent. Falls
+    back to the whole-graph bbox when there are no closed primitives."""
+    anchor_types = CLOSED_FLAT | {PrimitiveType.CIRCLE, PrimitiveType.ELLIPSE}
+    best = None
+    best_area = 0.0
+    for p in graph.primitives:
+        if p.type not in anchor_types:
+            continue
+        pts = outline_of(p, n=48)
+        if len(pts) < 3:
+            continue
+        xs = [pt[0] for pt in pts]
+        ys = [pt[1] for pt in pts]
+        area = (max(xs) - min(xs)) * (max(ys) - min(ys))
+        if area > best_area:
+            best_area = area
+            best = (min(xs), min(ys), max(xs), max(ys))
+    return best if best is not None else graph_bbox(graph)
+
+
 class _PlanBuilder:
     def __init__(
         self,
@@ -96,7 +124,7 @@ class _PlanBuilder:
         self.camera = camera
         self.depth = depth
         self.materials = materials
-        self.frame = ObjectFrame(graph_bbox(graph))
+        self.frame = ObjectFrame(_frame_bbox(graph))
 
     # -- shared helpers -----------------------------------------------------
 
@@ -178,16 +206,95 @@ class _PlanBuilder:
 
     # -- per-operator builders ----------------------------------------------
 
+    def _part_center_uv(self, part: SemanticPart) -> Tuple[float, float]:
+        """Part centre in normalised image coords; for primitive-less root
+        parts, the centre of the object frame's anchor bbox (the subject).
+        A concentric-constraint centre is NOT used here: the largest group
+        can be a junk cluster of arc fragments off the object centre."""
+        prims = part_primitives(self.graph, part)
+        if prims:
+            centres = [primitive_center(p) for p in prims]
+            return (sum(c[0] for c in centres) / len(centres),
+                    sum(c[1] for c in centres) / len(centres))
+        f = self.frame
+        return f.cx, f.cy
+
+    def _radius_ladder(self, cu: float, cv: float) -> List[float]:
+        """Distinct observed ring radii (normalised, descending) of
+        ellipse-like primitives centred (loosely) on the given system centre.
+        Near-duplicate re-traces of the same edge collapse into one rung."""
+        tol = 0.15 * self.frame.width
+        radii = []
+        for p in self.graph.primitives:
+            if p.type not in ELLIPSE_LIKE:
+                continue
+            rad = primitive_radii(p)
+            if not rad:
+                continue
+            px, py = primitive_center(p)
+            if math.hypot(px - cu, py - cv) > tol:
+                continue
+            radii.append(max(rad))
+        radii.sort(reverse=True)
+        ladder: List[float] = []
+        for r in radii:
+            if not ladder or abs(r - ladder[-1]) > 0.02 * ladder[-1]:
+                ladder.append(r)
+        return ladder
+
     def build_revolve(self, part: SemanticPart, conf: float) -> PlanPart:
         notes: List[str] = []
         prims = [p for p in part_primitives(self.graph, part) if p.type in ELLIPSE_LIKE]
-        majors = sorted(
-            (max(primitive_radii(p)) for p in prims if primitive_radii(p)), reverse=True
+        cu, cv = self._part_center_uv(part)
+        cx, cy = self.frame.point(cu, cv)
+        ladder = self._radius_ladder(cu, cv)
+        own = sorted(
+            (max(primitive_radii(p)) for p in prims if primitive_radii(p)),
+            reverse=True,
         )
-        cx, cy = self.part_center_obj(part)
-        r_out = self.frame.length(majors[0]) if majors else 0.1
-        r_in = self.frame.length(majors[1]) if len(majors) > 1 else 0.0
-        half_h = 0.15 * r_out
+        if own:
+            r_out = self.frame.length(own[0])
+        elif ladder:
+            # root/assembly part without own ring geometry: span the
+            # observed concentric system (e.g. the wheel's outer tyre ring)
+            r_out = self.frame.length(ladder[0])
+            notes.append(
+                "no own ring primitive; profile spans the observed concentric "
+                "system's outer radius"
+            )
+        else:
+            r_out = 0.1
+            notes.append("no ring geometry observed; fallback radius hypothesis")
+        # hollow section: the next observed ring strictly inside this one.
+        # Assembly roots stay solid so they back their child rings and never
+        # leave a see-through hole in the silhouette.
+        r_in = 0.0
+        if own:
+            for r in ladder:
+                rl = self.frame.length(r)
+                if rl < 0.98 * r_out:
+                    r_in = rl
+                    notes.append(
+                        "hollow cross-section: inner radius from the next "
+                        "observed concentric ring"
+                    )
+                    break
+        if own:
+            half_h = 0.06 * r_out
+            notes.append(
+                "revolve half-height is a generated hypothesis (0.06 * radius); "
+                "kept slim so the equator circle dominates the silhouette"
+            )
+        else:
+            # assembly roots carry no observed cross-section: they become a
+            # backing slab placed entirely behind z=0, deep enough that no
+            # tilted sightline through the child rings' hollow centre can
+            # pass underneath it, yet always behind the child front surfaces
+            half_h = 0.08 * r_out
+            notes.append(
+                "backing-slab hypothesis for the ring-system root (deep "
+                "behind-plane disc); hidden depth geometry inferred"
+            )
         est = self.depth_estimate(part)
         if est is not None:
             half_h *= 1.0 + est
@@ -195,26 +302,42 @@ class _PlanBuilder:
                 "revolve profile bulged by depth evidence (relative %.3f, "
                 "low confidence)" % est
             )
-        else:
-            notes.append("revolve half-height is a generated hypothesis (0.15 * radius)")
 
-        # revolve axis points along the view/depth axis, tilted by the camera
-        # stage's circle-unprojection estimate when available
-        tilt = 0.0
+        # the revolve axis is the object's symmetry axis; the camera stage's
+        # object rotation (tilt from circle-unprojection) is applied to the
+        # whole model at render time, so it must NOT be baked in here
         rot = self.camera.object_rotation_euler_deg
         if rot.value is not None:
-            tilt = math.radians(float(rot.value[0]))
-            notes.append("revolve axis tilted %.1f deg from circle-unprojection" % float(rot.value[0]))
-        direction = [0.0, round(math.sin(tilt), 6), round(math.cos(tilt), 6)]
+            notes.append(
+                "axis is the object symmetry axis; %.1f deg tilt carried by "
+                "the camera stage's object rotation" % float(rot.value[0])
+            )
+        direction = [0.0, 0.0, 1.0]
 
+        if r_in > 0.0:
+            # tyre-like barrel cross-section: the maximum radius occurs only
+            # at the equator so the projected silhouette keeps the observed
+            # ellipse axis ratio instead of being fattened by the sidewall
+            r_sh = max(r_in, 0.92 * r_out)
+            pts = [
+                [r_in, -half_h],
+                [r_sh, -half_h],
+                [r_out, 0.0],
+                [r_sh, half_h],
+                [r_in, half_h],
+            ]
+        else:
+            # backing disc sits entirely behind the z=0 plane so its front
+            # cap never covers the child rings' front surfaces
+            pts = [
+                [0.0, -2.0 * half_h],
+                [r_out, -2.0 * half_h],
+                [r_out, 0.0],
+                [0.0, 0.0],
+            ]
         profile = {
             "type": "polyline",
-            "points": [
-                [round(r_in, 6), round(-half_h, 6)],
-                [round(r_out, 6), round(-half_h, 6)],
-                [round(r_out, 6), round(half_h, 6)],
-                [round(r_in, 6), round(half_h, 6)],
-            ],
+            "points": [[round(r, 6), round(z, 6)] for r, z in pts],
             "closed": True,
         }
         pp = self.base_part(part, OperatorCategory.REVOLVE, conf, notes)
@@ -290,7 +413,7 @@ class _PlanBuilder:
              if c.type in _RADIAL_CONSTRAINTS and ids.intersection(c.entities)),
             None,
         )
-        count = len(part.primitive_ids) or 2
+        count = len(part.primitive_ids) or 3
         source_part = part.id
         centre_uv = None
         if constraint is not None:
@@ -301,10 +424,9 @@ class _PlanBuilder:
             proto = constraint.params.get("prototype")
             if proto is not None:
                 owner = self._owner_of(str(proto), exclude=None)
-                if owner is not None:
+                if owner is not None and owner != part.id:
                     source_part = owner
-                    if owner != part.id:
-                        notes.append("array repeats prototype part '%s'" % owner)
+                    notes.append("array repeats prototype part '%s'" % owner)
         notes.append("array count %d from %s" % (
             count, "radial constraint" if constraint else "primitive count"))
         if centre_uv is not None:
@@ -313,9 +435,74 @@ class _PlanBuilder:
             cx, cy = self.part_center_obj(part)
         pp = self.base_part(part, OperatorCategory.RADIAL_ARRAY, conf, notes)
         pp.source_part = source_part
-        pp.count = max(count, 2)
-        pp.angle_degrees = round(360.0 / max(count, 2), 6)
+        pp.count = max(count, 3)
+        # full-circle repetition; the Blender builder interprets
+        # angle_degrees as the total sweep
+        pp.angle_degrees = 360.0
         pp.axis = {"origin": [round(cx, 6), round(cy, 6), 0.0], "direction": [0.0, 0.0, 1.0]}
+        return pp
+
+    def _prototype_outline(self, prim) -> List[List[float]]:
+        """Closed 2D outline (object units) usable as an extrusion profile
+        for one array copy; open curves become thin rectangles."""
+        pts = outline_of(prim)
+        if len(pts) >= 3 and prim.type in ELLIPSE_LIKE | CLOSED_FLAT:
+            return [[round(x, 6), round(y, 6)]
+                    for x, y in (self.frame.point(u, v) for u, v in pts)]
+        if len(pts) >= 2:
+            p0 = self.frame.point(*pts[0])
+            p1 = self.frame.point(*pts[-1])
+            dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+            length = math.hypot(dx, dy)
+            if length > 1e-9:
+                w = max(0.05 * length, 0.01)
+                nx, ny = -dy / length * w, dx / length * w
+                rect = [
+                    (p0[0] + nx, p0[1] + ny),
+                    (p1[0] + nx, p1[1] + ny),
+                    (p1[0] - nx, p1[1] - ny),
+                    (p0[0] - nx, p0[1] - ny),
+                ]
+                return [[round(x, 6), round(y, 6)] for x, y in rect]
+        return []
+
+    def build_array_prototype(self, part: SemanticPart, conf: float) -> PlanPart:
+        """Extruded one-copy geometry for an array whose primitives all live
+        on the array part itself: splits off the constraint's prototype curve
+        as its own part so the array never references itself."""
+        notes = ["prototype geometry extruded for radial array '%s'" % part.id]
+        prims = part_primitives(self.graph, part)
+        proto_prim = None
+        ids = set(part.primitive_ids)
+        constraint = next(
+            (c for c in self.graph.constraints
+             if c.type in _RADIAL_CONSTRAINTS and ids.intersection(c.entities)),
+            None,
+        )
+        if constraint is not None:
+            pid = constraint.params.get("prototype")
+            proto_prim = next((p for p in prims if p.id == pid), None)
+        if proto_prim is None and prims:
+            proto_prim = prims[0]
+        points = self._prototype_outline(proto_prim) if proto_prim is not None else []
+        if proto_prim is not None:
+            notes.append("prototype curve '%s'" % proto_prim.id)
+        depth = self.extrusion_depth(part, notes)
+        pp = PlanPart(
+            id="%s_prototype" % part.id,
+            operator=OperatorCategory.EXTRUDE,
+            parent=part.parent_id,
+            material=self.materials.get(part.id) or _material_from_appearance(part),
+            visibility=part.visibility,
+            evidence=EvidencedValue(
+                value=OperatorCategory.EXTRUDE.value,
+                source=EvidenceSource.FITTED_FROM_OBSERVATION,
+                confidence=round(max(0.3, conf - 0.2), 3),
+                note="; ".join(notes),
+            ),
+        )
+        pp.profile = {"type": "polyline", "points": points, "closed": True}
+        pp.depth = round(depth, 6)
         return pp
 
     def build_mirror(self, part: SemanticPart, conf: float) -> PlanPart:
@@ -445,6 +632,20 @@ def build_plan(
         op, conf = builder.operator_of(part)
         if op in (OperatorCategory.DISPLACEMENT, OperatorCategory.TEXTURE_ONLY):
             plan_parts.append(builder.build_surface_detail(part, op, conf))
+        elif op == OperatorCategory.RADIAL_ARRAY:
+            arr = builder.build_radial_array(part, conf)
+            if arr.source_part == part.id:
+                # the repetition lives on the group part itself: split off a
+                # standalone prototype part so the array has a valid,
+                # non-self source
+                proto = builder.build_array_prototype(part, conf)
+                plan_parts.append(proto)
+                arr.source_part = proto.id
+                arr.evidence.note = (
+                    (arr.evidence.note + "; " if arr.evidence.note else "")
+                    + "array repeats prototype part '%s'" % proto.id
+                )
+            plan_parts.append(arr)
         else:
             plan_parts.append(builders[op](part, conf))
 
@@ -573,10 +774,22 @@ def validate_plan(plan: ConstructionPlan) -> List[str]:
             if p.depth is None or not _is_finite_number(p.depth) or p.depth <= 0:
                 errors.append("part '%s': extrude depth must be > 0" % p.id)
         elif p.operator == OperatorCategory.RADIAL_ARRAY:
-            if p.count is None or not isinstance(p.count, int) or p.count < 2:
-                errors.append("part '%s': radial_array count must be an integer >= 2" % p.id)
+            if p.count is None or not isinstance(p.count, int) or p.count < 3:
+                errors.append("part '%s': radial_array count must be an integer >= 3" % p.id)
             if p.source_part is None:
                 errors.append("part '%s': radial_array requires a source_part" % p.id)
+            elif p.source_part == p.id:
+                errors.append(
+                    "part '%s': radial_array source_part must not be the part itself" % p.id)
+            else:
+                src = next((q for q in plan.parts if q.id == p.source_part), None)
+                if src is not None and src.operator in (
+                        OperatorCategory.RADIAL_ARRAY, OperatorCategory.MIRROR,
+                        OperatorCategory.DISPLACEMENT, OperatorCategory.TEXTURE_ONLY):
+                    errors.append(
+                        "part '%s': radial_array source_part '%s' is not a "
+                        "geometry prototype (operator %s)"
+                        % (p.id, p.source_part, src.operator.value))
         elif p.operator == OperatorCategory.MIRROR:
             if p.source_part is None:
                 errors.append("part '%s': mirror requires a source_part" % p.id)

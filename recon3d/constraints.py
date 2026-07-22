@@ -20,6 +20,7 @@ from .schemas import (
     GeometricConstraint,
     GeometricPrimitive,
     PrimitiveType,
+    TraceLayerName,
 )
 
 _ROUND = 6
@@ -35,6 +36,15 @@ _ORIENTED_TYPES = {
     PrimitiveType.LINE, PrimitiveType.ELLIPSE, PrimitiveType.ELLIPTICAL_ARC,
     PrimitiveType.RECTANGLE, PrimitiveType.ROUNDED_RECTANGLE,
     PrimitiveType.SYMMETRIC_SPLINE,
+}
+
+#: layer richness for cross-layer duplicate resolution: the same physical
+#: feature traced by several layers is kept from the richest (lowest rank).
+_LAYER_RANK = {
+    TraceLayerName.SILHOUETTE: 0,
+    TraceLayerName.COLOR_REGIONS: 1,
+    TraceLayerName.STRUCTURAL_EDGES: 2,
+    TraceLayerName.DETAILS: 3,
 }
 
 
@@ -58,6 +68,15 @@ def _radius(p: GeometricPrimitive) -> Optional[float]:
         return float(p.params["radius"])
     if "radii" in p.params:
         return float(np.mean(p.params["radii"]))
+    return None
+
+
+def _radius_pair(p: GeometricPrimitive) -> Optional[Tuple[float, float]]:
+    if "radii" in p.params:
+        return abs(float(p.params["radii"][0])), abs(float(p.params["radii"][1]))
+    if "radius" in p.params:
+        r = abs(float(p.params["radius"]))
+        return r, r
     return None
 
 
@@ -131,6 +150,74 @@ def _make(ctype: ConstraintType, entities: List[str],
           confidence: float = 0.9) -> GeometricConstraint:
     return GeometricConstraint(type=ctype, entities=list(entities),
                                params=params or {}, confidence=confidence)
+
+
+# ---------------------------------------------------------------------------
+# cross-layer duplicate resolution
+# ---------------------------------------------------------------------------
+
+def _fallback_bbox(p: GeometricPrimitive) -> Optional[Tuple[float, float, float, float]]:
+    pts = p.fallback_points
+    if not pts:
+        return None
+    xs = [pt[0] for pt in pts]
+    ys = [pt[1] for pt in pts]
+    return min(xs), min(ys), max(xs), max(ys)
+
+
+def _same_geometry(a: GeometricPrimitive, b: GeometricPrimitive,
+                   centers: Dict[str, np.ndarray], tol: float) -> bool:
+    """True when two same-type primitives are traces of the same feature."""
+    if a.id not in centers or b.id not in centers:
+        return False
+    if float(np.hypot(*(centers[a.id] - centers[b.id]))) > tol:
+        return False
+    ra, rb = _radius(a), _radius(b)
+    if ra is not None and rb is not None:
+        return abs(ra - rb) <= 0.01 * max(ra, rb)
+    la, lb = _length(a), _length(b)
+    if la is not None and lb is not None:
+        return abs(la - lb) <= 0.01 * max(la, lb)
+    ba, bb = _fallback_bbox(a), _fallback_bbox(b)
+    if ba is None or bb is None:
+        return False
+    wa, ha = ba[2] - ba[0], ba[3] - ba[1]
+    wb, hb = bb[2] - bb[0], bb[3] - bb[1]
+    if max(wa, wb) < 1e-12 or max(ha, hb) < 1e-12:
+        return False
+    return (abs(wa - wb) <= 0.02 * max(wa, wb)
+            and abs(ha - hb) <= 0.02 * max(ha, hb))
+
+
+def _dedupe_cross_layer(prims: List[GeometricPrimitive],
+                        centers: Dict[str, np.ndarray],
+                        scale: float) -> List[GeometricPrimitive]:
+    """Merge coincident same-type duplicates that different trace layers
+    produced for the same physical feature (e.g. the silhouette ellipse and
+    its exact color-region re-trace). The survivor comes from the richest
+    layer (silhouette > color_regions > structural_edges > details), ties
+    broken by confidence then id. Same-layer near-duplicates are left alone
+    (they are real, already cleaned-up features)."""
+    tol = 0.01 * scale
+    uf = _UnionFind()
+    for i in range(len(prims)):
+        for j in range(i + 1, len(prims)):
+            a, b = prims[i], prims[j]
+            if a.type != b.type or a.source_layer == b.source_layer:
+                continue
+            if _same_geometry(a, b, centers, tol):
+                uf.union(a.id, b.id)
+    groups: Dict[str, List[GeometricPrimitive]] = {}
+    for p in prims:
+        groups.setdefault(uf.find(p.id), []).append(p)
+
+    def _rank(p: GeometricPrimitive):
+        return (_LAYER_RANK.get(p.source_layer, 99), -p.confidence, p.id)
+
+    kept = [sorted(g, key=_rank)[0] for g in groups.values()]
+    order = {p.id: i for i, p in enumerate(prims)}
+    kept.sort(key=lambda p: order[p.id])
+    return kept
 
 
 # ---------------------------------------------------------------------------
@@ -314,6 +401,11 @@ def _detect_containment(prims, scale, out):
         for small in closed:
             if big.id == small.id or areas[big.id] <= areas[small.id]:
                 continue
+            # containment is only meaningful within one trace layer; across
+            # layers the same edge is re-traced at different fidelity and
+            # produces nested-duplicate noise
+            if big.source_layer != small.source_layer:
+                continue
             cnt = (polys[big.id] * 4096.0).astype(np.float32)
             pts = polys[small.id]
             ok = True
@@ -347,13 +439,17 @@ def _polylines_cross(P: np.ndarray, Q: np.ndarray) -> bool:
 
 
 def _detect_spatial(prims, scale, out, containment_pairs):
-    """intersection / adjacency between sampled polylines."""
+    """intersection / adjacency between sampled polylines (within-layer only;
+    cross-layer near-touches are duplicate-trace noise)."""
     tol = 0.02 * scale
     polys = {p.id: _poly(p) for p in prims if len(p.fallback_points) >= 2}
+    layer = {p.id: p.source_layer for p in prims}
     ids = list(polys)
     for i in range(len(ids)):
         for j in range(i + 1, len(ids)):
             a, b = ids[i], ids[j]
+            if layer.get(a) != layer.get(b):
+                continue
             if (a, b) in containment_pairs or (b, a) in containment_pairs:
                 continue
             P, Q = polys[a], polys[b]
@@ -378,9 +474,23 @@ def _detect_spatial(prims, scale, out, containment_pairs):
 
 
 def _detect_alignment(prims, centers, scale, out):
+    """Collinear centre groups. Precision-first: groups need 4+ members (any
+    three fragment centres are near-collinear often enough to be noise) and
+    only maximal groups are reported (subsets of a longer chain are
+    redundant). Detected per trace layer: cross-layer alignments are
+    dominated by re-traced duplicate geometry."""
     tol = 0.01 * scale
-    items = [(p.id, centers[p.id]) for p in prims if p.id in centers]
+    by_layer: Dict[Any, List[Tuple[str, np.ndarray]]] = {}
+    for p in prims:
+        if p.id in centers:
+            by_layer.setdefault(p.source_layer, []).append((p.id, centers[p.id]))
+    for items in by_layer.values():
+        _detect_alignment_within(items, tol, out)
+
+
+def _detect_alignment_within(items, tol, out):
     seen = set()
+    groups: List[Tuple[tuple, float, float, List[float]]] = []
     for i in range(len(items)):
         for j in range(i + 1, len(items)):
             (ia, ca), (ib, cb) = items[i], items[j]
@@ -395,24 +505,32 @@ def _detect_alignment(prims, centers, scale, out):
                 if d <= tol:
                     group.append((float(np.dot(ck - ca, v) / L), ik))
                     worst = max(worst, d)
-            if len(group) >= 3:
+            if len(group) >= 4:
                 group.sort()
                 key = tuple(sorted(g[1] for g in group))
                 if key in seen:
                     continue
                 seen.add(key)
-                ids = [g[1] for g in group]
                 angle = math.degrees(math.atan2(v[1], v[0])) % 180.0
-                out.append(_make(ConstraintType.ALIGNMENT, ids,
-                                 {"angle_degrees": round(angle, 3)},
-                                 _conf(worst, tol)))
-                gaps = np.diff([g[0] for g in group]) * L
-                if len(gaps) >= 2 and gaps.mean() > 1e-6:
-                    cv = float(gaps.std() / gaps.mean())
-                    if cv <= 0.05:
-                        out.append(_make(ConstraintType.EQUAL_SPACING, ids,
-                                         {"spacing": round(float(gaps.mean()), _ROUND)},
-                                         _conf(cv, 0.05)))
+                groups.append((key, angle, worst, [g[0] for g in group]))
+    # drop non-maximal groups (strict subsets of a longer chain)
+    maximal = []
+    for g in groups:
+        ids = set(g[0])
+        if any(set(h[0]) > ids for h in groups):
+            continue
+        maximal.append(g)
+    for key, angle, worst, ts in maximal:
+        out.append(_make(ConstraintType.ALIGNMENT, list(key),
+                         {"angle_degrees": round(angle, 3)},
+                         _conf(worst, tol)))
+        gaps = np.diff(ts)
+        if len(gaps) >= 2 and gaps.mean() > 1e-6:
+            cv = float(gaps.std() / gaps.mean())
+            if cv <= 0.05:
+                out.append(_make(ConstraintType.EQUAL_SPACING, list(key),
+                                 {"spacing": round(float(gaps.mean()), _ROUND)},
+                                 _conf(cv, 0.05)))
 
 
 def _detect_rotational_repetition(prims, centers, scale, out):
@@ -421,39 +539,57 @@ def _detect_rotational_repetition(prims, centers, scale, out):
     seen = set()
     for hub in hubs:
         hc = centers[hub.id]
+        # un-foreshortening transform: a ring of equally spaced copies on a
+        # tilted circle projects to uneven angular gaps around the ellipse
+        # centre; scale the minor-axis direction back out before measuring
+        theta = 0.0
+        stretch = 1.0
+        rad = _radius_pair(hub)
+        if rad is not None and hub.type == PrimitiveType.ELLIPSE:
+            major, minor = max(rad), min(rad)
+            if minor > 1e-9 and minor / major < 0.98:
+                stretch = major / minor
+                theta = math.radians(float(hub.params.get("rotation_degrees", 0.0) or 0.0))
+        ct, st = math.cos(-theta), math.sin(-theta)
+
+        def _unproject(pt: np.ndarray) -> Tuple[float, float]:
+            d = pt - hc
+            u = ct * d[0] - st * d[1]
+            v = st * d[0] + ct * d[1]
+            return math.degrees(math.atan2(v * stretch, u)) % 360.0, \
+                float(math.hypot(u, v * stretch))
+
         sats = []
         for p in prims:
             if p.id == hub.id or p.id not in centers:
                 continue
-            r = float(np.hypot(*(centers[p.id] - hc)))
+            ang, r = _unproject(centers[p.id])
             if r <= 0.05 * scale:
                 continue
-            sats.append((p, r))
-        by_type: Dict[PrimitiveType, List[Tuple[GeometricPrimitive, float]]] = {}
-        for p, r in sats:
-            by_type.setdefault(p.type, []).append((p, r))
+            sats.append((p, r, ang))
+        by_type: Dict[PrimitiveType, List[Tuple[GeometricPrimitive, float, float]]] = {}
+        for p, r, ang in sats:
+            by_type.setdefault(p.type, []).append((p, r, ang))
         for t, group in by_type.items():
             group.sort(key=lambda pr: pr[1])
             # split into radius clusters (5 % band)
-            clusters: List[List[Tuple[GeometricPrimitive, float]]] = []
-            for p, r in group:
+            clusters: List[List[Tuple[GeometricPrimitive, float, float]]] = []
+            for p, r, ang in group:
                 if clusters and abs(r - np.mean([g[1] for g in clusters[-1]])) \
                         <= 0.05 * max(r, 1e-9):
-                    clusters[-1].append((p, r))
+                    clusters[-1].append((p, r, ang))
                 else:
-                    clusters.append([(p, r)])
+                    clusters.append([(p, r, ang)])
             for cl in clusters:
                 n = len(cl)
                 if n < 3:
                     continue
-                angs = sorted(math.degrees(math.atan2(centers[p.id][1] - hc[1],
-                                                      centers[p.id][0] - hc[0])) % 360.0
-                              for p, _ in cl)
+                angs = sorted(g[2] for g in cl)
                 gaps = np.diff(angs + [angs[0] + 360.0])
                 expected = 360.0 / n
                 dev = float(np.abs(gaps - expected).max())
                 if dev <= 0.1 * expected:
-                    ids = [p.id for p, _ in cl]
+                    ids = [p.id for p, _, _ in cl]
                     key = frozenset(ids)
                     if key in seen:
                         continue
@@ -566,7 +702,14 @@ def _detect_shared_axis(prims, centers, scale, out):
 
 def detect_constraints(primitives: List[GeometricPrimitive],
                        cfg: PipelineConfig) -> List[GeometricConstraint]:
-    """Detect all supported geometric constraints between primitives."""
+    """Detect all supported geometric constraints between primitives.
+
+    Cross-layer duplicate traces of the same feature are merged first (the
+    survivor comes from the richest layer), then relation detection runs on
+    the deduplicated set. Containment / adjacency / intersection / alignment
+    are detected within a single trace layer only; concentric / radial /
+    mirror structure is detected across the whole deduplicated set.
+    """
     prims = list(primitives)
     centers: Dict[str, np.ndarray] = {}
     all_pts = []
@@ -583,6 +726,8 @@ def detect_constraints(primitives: List[GeometricPrimitive],
         scale = 1.0
     if scale < 1e-9:
         scale = 1.0
+
+    prims = _dedupe_cross_layer(prims, centers, scale)
 
     out: List[GeometricConstraint] = []
     _detect_concentric(prims, centers, scale, out)

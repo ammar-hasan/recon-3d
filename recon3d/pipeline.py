@@ -47,6 +47,7 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         bundle = input_manager.load_input(spec)
         manifest.input_hashes = {img.path: img.sha256 for img in bundle.images}
         seg = segmentation.segment(bundle, str(project_dir / "segmentation"), cfg)
+        SchemaIO.save_json(seg, project_dir / "segmentation" / "segmentation_result.json")
         crop_meta, crop_rgba, crop_mask = crop.make_crop(
             seg, str(project_dir / "segmentation"), cfg)
 
@@ -61,7 +62,6 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         cons = constraints.detect_constraints(prims, cfg)
         graph = sketch_graph.build_sketch_graph(prims, cons)
         graph = semantic_parts.decompose_parts(graph, crop_rgba, spec, cfg)
-        SchemaIO.save_json(graph, project_dir / "geometry" / "sketch_graph.json")
         SchemaIO.save_json(
             graph.model_copy(update={"parts": [], "constraints": []}),
             project_dir / "geometry" / "fitted_primitives.json")
@@ -71,6 +71,7 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         dep = depth.estimate_depth(crop_rgba, crop_mask, graph,
                                    str(project_dir / "geometry"), cfg)
         graph = operators.classify_operators(graph, dep, cfg)
+        SchemaIO.save_json(graph, project_dir / "geometry" / "sketch_graph.json")
         plan = construction_plan.build_plan(graph, cam, dep, spec, cfg)
         errors = construction_plan.validate_plan(plan)
         if errors:
@@ -99,6 +100,11 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
     finally:
         manifest.finished_at = datetime.datetime.now().isoformat(timespec="seconds")
         SchemaIO.save_json(manifest, project_dir / "manifest.json")
+        try:
+            from . import reporting
+            reporting.generate_report(project_dir)
+        except Exception:  # noqa: BLE001 - reporting must never mask the run
+            traceback.print_exc()
 
     return manifest
 

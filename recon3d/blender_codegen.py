@@ -437,7 +437,13 @@ def main():
                 target = built.get(target_id)
                 if target is None:
                     raise ValueError("boolean target %r not built yet" % target_id)
-                cutter = build_primitive(pid, part, coll)
+                profile = (part.get("profile") or {}).get("points") or []
+                if len(profile) >= 3:
+                    # exact cutter shape from the observed hole outline
+                    cutter = _extrude_mesh(
+                        pid, profile, float(part.get("depth") or 0.1), coll)
+                else:
+                    cutter = build_primitive(pid, part, coll)
                 mod = target.modifiers.new("boolean_%s" % pid, 'BOOLEAN')
                 mod.operation = (part.get("boolean_operation") or "difference").upper()
                 if mod.operation not in ("DIFFERENCE", "UNION", "INTERSECT"):

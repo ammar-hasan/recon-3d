@@ -318,6 +318,83 @@ class TestConstraints:
         assert all(c.confidence >= 0.6 for c in cons)
 
 
+class TestCrossLayerDedupe:
+    """Stage 8 hardening: the same feature re-traced by several layers must
+    not spawn duplicate/cross-layer relation noise."""
+
+    def _dup_wheel_primitives(self):
+        """Wheel traced twice: silhouette layer + a color_regions re-trace."""
+        sil = wheel_layer()
+        dup_paths = []
+        for i, r in enumerate((0.30, 0.19, 0.05)):
+            dup_paths.append(make_path(circle_pts(WHEEL_CENTER, r), True,
+                                       "cring_%d" % i,
+                                       layer=TraceLayerName.COLOR_REGIONS))
+        color = make_layer(dup_paths, TraceLayerName.COLOR_REGIONS)
+        return fit_primitives([sil, color], CFG)
+
+    def test_cross_layer_duplicates_merged(self):
+        prims = self._dup_wheel_primitives()
+        cons = detect_constraints(prims, CFG)
+        # the color_regions re-traces are coincident duplicates: they must not
+        # appear in any constraint (the silhouette originals win)
+        for c in cons:
+            assert not any(e.startswith("color_regions_") for e in c.entities), c
+        # no coincident-duplicate relations survive
+        assert not [c for c in cons if c.type == ConstraintType.COINCIDENT]
+        # concentric structure of the surviving rings is still detected
+        conc = [c for c in cons if c.type == ConstraintType.CONCENTRIC]
+        assert len(conc) == 1
+        assert sorted(conc[0].entities) == sorted(
+            p.id for p in prims if p.type == PrimitiveType.CIRCLE
+            and p.id.startswith("silhouette_"))
+
+    def test_containment_scoped_within_layer(self):
+        outer = make_path(circle_pts((0.5, 0.5), 0.4), True, "outer",
+                          layer=TraceLayerName.SILHOUETTE)
+        inner = make_path(circle_pts((0.5, 0.5), 0.1), True, "inner",
+                          layer=TraceLayerName.COLOR_REGIONS)
+        prims = fit_primitives(
+            [make_layer([outer], TraceLayerName.SILHOUETTE),
+             make_layer([inner], TraceLayerName.COLOR_REGIONS)], CFG)
+        cons = detect_constraints(prims, CFG)
+        # radii differ wildly -> not duplicates; both survive, but cross-layer
+        # containment must NOT be reported
+        assert not [c for c in cons if c.type == ConstraintType.CONTAINMENT]
+        # concentric detection still works across layers
+        assert [c for c in cons if c.type == ConstraintType.CONCENTRIC]
+
+    def test_adjacency_scoped_within_layer(self):
+        l0 = make_path(line_pts((0.2, 0.3), (0.6, 0.3)), False, "a",
+                       layer=TraceLayerName.SILHOUETTE)
+        l1 = make_path(line_pts((0.2, 0.3005), (0.6, 0.3005)), False, "b",
+                       layer=TraceLayerName.STRUCTURAL_EDGES)
+        prims = fit_primitives(
+            [make_layer([l0], TraceLayerName.SILHOUETTE),
+             make_layer([l1], TraceLayerName.STRUCTURAL_EDGES)], CFG)
+        cons = detect_constraints(prims, CFG)
+        # nearly on top of each other but in different layers: no
+        # adjacency/intersection reported
+        assert not [c for c in cons if c.type in (ConstraintType.ADJACENCY,
+                                                  ConstraintType.INTERSECTION)]
+
+    def test_alignment_needs_four_and_maximal(self):
+        # exactly 3 collinear features: too weak to report
+        pts = [make_path(circle_pts((0.2 + 0.2 * k, 0.5), 0.03), True, "t%d" % k)
+               for k in range(3)]
+        prims = fit_primitives([make_layer(pts)], CFG)
+        cons = detect_constraints(prims, CFG)
+        assert not [c for c in cons if c.type == ConstraintType.ALIGNMENT]
+        # 4 collinear features: reported once
+        pts = [make_path(circle_pts((0.15 + 0.2 * k, 0.5), 0.03), True, "q%d" % k)
+               for k in range(4)]
+        prims = fit_primitives([make_layer(pts)], CFG)
+        cons = detect_constraints(prims, CFG)
+        al = [c for c in cons if c.type == ConstraintType.ALIGNMENT]
+        assert len(al) == 1
+        assert len(al[0].entities) == 4
+
+
 # ---------------------------------------------------------------------------
 # Stage 9: sketch graph
 # ---------------------------------------------------------------------------

@@ -199,6 +199,52 @@ def test_wheel_operators():
         assert confs == sorted(confs, reverse=True)
 
 
+def test_radial_symmetry_on_rings_does_not_beat_revolve():
+    """A radial_symmetry constraint between concentric rings (no repetition
+    count) must not turn ring parts into arrays of themselves."""
+    graph = make_wheel_graph()
+    graph.constraints.append(
+        GeometricConstraint(
+            type=ConstraintType.RADIAL_SYMMETRY,
+            entities=["tyre_outer", "rim_outer", "hub_prim"],
+            params={"center": [0.5, 0.5]},
+            confidence=0.9,
+        )
+    )
+    out = operators_mod.classify_operators(graph, NO_DEPTH, CFG)
+    selected = {p.id: p.selected_operator for p in out.parts}
+    assert selected["tyre"] == OperatorCategory.REVOLVE.value
+    assert selected["rim"] == OperatorCategory.REVOLVE.value
+    assert selected["hub"] == OperatorCategory.REVOLVE.value
+    # spokes still get the array (count=5 repetition constraint)
+    assert selected["spokes"] == OperatorCategory.RADIAL_ARRAY.value
+
+
+def test_repetition_count_two_is_not_an_array():
+    """rotational repetition needs count >= 3 to justify radial_array."""
+    prims = [
+        _ellipse("hub_prim", 0.5, 0.5, 0.1, 0.1 * TILT_RATIO),
+        _rect_region("wing_a", 0.7, 0.45, 0.8, 0.55),
+        _rect_region("wing_b", 0.2, 0.45, 0.3, 0.55),
+    ]
+    constraints = [
+        GeometricConstraint(
+            type=ConstraintType.ROTATIONAL_REPETITION,
+            entities=["wing_a", "wing_b"],
+            params={"count": 2, "center": [0.5, 0.5], "prototype": "wing_a"},
+            confidence=0.9,
+        ),
+    ]
+    parts = [
+        _part("hub", "hub", ["hub_prim"]),
+        _part("wings", "wings", ["wing_a", "wing_b"]),
+    ]
+    graph = SketchGraph(primitives=prims, constraints=constraints, parts=parts)
+    out = operators_mod.classify_operators(graph, NO_DEPTH, CFG)
+    selected = {p.id: p.selected_operator for p in out.parts}
+    assert selected["wings"] != OperatorCategory.RADIAL_ARRAY.value
+
+
 def test_camera_tilt_from_ellipse_ratio():
     est = camera_mod.estimate_camera(
         make_wheel_graph(), make_seg(), make_crop_meta(), make_spec(), CFG
@@ -244,6 +290,73 @@ def test_wheel_plan_valid():
     assert ops["spokes"] == OperatorCategory.RADIAL_ARRAY
     errors = plan_mod.validate_plan(plan)
     assert errors == [], errors
+
+
+def test_self_contained_array_gets_prototype_part():
+    """When the array's prototype curve belongs to the array part itself,
+    build_plan must split off a distinct prototype part (never self-reference)."""
+    graph = operators_mod.classify_operators(make_wheel_graph(), NO_DEPTH, CFG)
+    cam = camera_mod.estimate_camera(
+        graph, make_seg(), make_crop_meta(), make_spec(output_dir="/nonexistent-dir"), CFG
+    )
+    plan = plan_mod.build_plan(graph, cam, NO_DEPTH, make_spec(output_dir="/nonexistent-dir"), CFG)
+    by_id = {p.id: p for p in plan.parts}
+    arr = by_id["spokes"]
+    assert arr.source_part is not None and arr.source_part != "spokes"
+    proto = by_id[arr.source_part]
+    assert proto.operator == OperatorCategory.EXTRUDE
+    assert proto.profile and len(proto.profile["points"]) >= 3
+    assert arr.count == 5 and arr.angle_degrees == 360.0
+    assert plan_mod.validate_plan(plan) == []
+
+
+def test_revolve_profile_uses_observed_ring_radii():
+    """Wheel cross-sections must come from the observed concentric rings:
+    outer ring -> max radius, inner ring -> hollow section."""
+    graph = operators_mod.classify_operators(make_wheel_graph(), NO_DEPTH, CFG)
+    cam = camera_mod.estimate_camera(
+        graph, make_seg(), make_crop_meta(), make_spec(output_dir="/nonexistent-dir"), CFG
+    )
+    plan = plan_mod.build_plan(graph, cam, NO_DEPTH, make_spec(output_dir="/nonexistent-dir"), CFG)
+    by_id = {p.id: p for p in plan.parts}
+    tyre_pts = by_id["tyre"].profile["points"]
+    r_out = max(p[0] for p in tyre_pts)
+    r_in = min(p[0] for p in tyre_pts)
+    # tyre outer ring radius 0.30 over a 0.6-wide graph -> 0.5 object units
+    assert r_out == pytest.approx(0.5, rel=0.02)
+    # hollow: next ring in (rim at 0.20 -> 0.333 object units)
+    assert r_in == pytest.approx(0.20 / 0.6, rel=0.05)
+    # axis stays the object symmetry axis; tilt is applied at render time
+    assert by_id["tyre"].axis["direction"] == [0.0, 0.0, 1.0]
+    half_h = (max(p[1] for p in tyre_pts) - min(p[1] for p in tyre_pts)) / 2.0
+    assert half_h > 0.02  # not the old degenerate 0.015 box
+
+
+def test_validate_rejects_self_referencing_array():
+    arr = PlanPart(
+        id="arr",
+        operator=OperatorCategory.RADIAL_ARRAY,
+        source_part="arr",
+        count=5,
+        angle_degrees=360.0,
+    )
+    plan = _plan_with([arr])
+    errors = plan_mod.validate_plan(plan)
+    assert any("itself" in e for e in errors)
+
+
+def test_validate_rejects_array_without_geometry_prototype():
+    arr = PlanPart(
+        id="arr2",
+        operator=OperatorCategory.RADIAL_ARRAY,
+        source_part="tex",
+        count=5,
+        angle_degrees=360.0,
+    )
+    tex = PlanPart(id="tex", operator=OperatorCategory.TEXTURE_ONLY)
+    plan = _plan_with([tex, arr])
+    errors = plan_mod.validate_plan(plan)
+    assert any("prototype" in e for e in errors)
 
 
 # ---------------------------------------------------------------------------

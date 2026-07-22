@@ -39,6 +39,7 @@ from .schemas import (
     EvidenceSource,
     GeometricPrimitive,
     InputSpec,
+    PrimitiveType,
     ProjectionType,
     SegmentationResult,
     SketchGraph,
@@ -138,12 +139,20 @@ def _estimate_object_rotation(
 
     Returns [rx_tilt_deg, ry_deg, rz_inplane_deg] where rx is the
     circle-unprojection tilt acos(minor/major) and rz is the in-plane
-    ellipse rotation.
+    rotation in Blender's y-up frame (the image-space ellipse rotation
+    negated: image y runs down, Blender render y runs up).
+
+    Only full circles/ellipses with a plausible axis ratio vote: arc
+    fragments always look circular (ratio 1.0) and slit-like detail
+    ellipses (ratio << 0.5) are not true circles in 3D, so both would
+    poison the estimate.
     """
     tilts = []
     weights = []
     rots = []
     for prim in features:
+        if prim.type not in (PrimitiveType.CIRCLE, PrimitiveType.ELLIPSE):
+            continue
         rad = primitive_radii(prim)
         if rad is None:
             continue
@@ -151,6 +160,8 @@ def _estimate_object_rotation(
         if major <= 1e-9:
             continue
         ratio = min(1.0, minor / major)
+        if ratio < 0.5:
+            continue
         tilts.append(math.degrees(math.acos(ratio)))
         weights.append(max(prim.confidence, 1e-3) * major)
         rots.append(primitive_rotation_deg(prim))
@@ -174,12 +185,13 @@ def _estimate_object_rotation(
         "feature(s) (spread %.1f deg)" % (tilt, len(tilts), spread)
     )
     return EvidencedValue(
-        value=[tilt, 0.0, rot],
+        value=[tilt, 0.0, -rot],
         unit="deg",
         source=EvidenceSource.ESTIMATED_FROM_CAMERA,
         confidence=confidence,
-        note="tilt = acos(minor/major) of projected circles; "
-        "assumes features are true circles in 3D",
+        note="tilt = acos(minor/major) of projected circles; rz is the "
+        "image-space ellipse rotation negated (Blender y-up vs image "
+        "y-down); assumes features are true circles in 3D",
     )
 
 
