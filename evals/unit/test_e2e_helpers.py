@@ -180,6 +180,26 @@ class TestPhaseSixSevenScoring:
         assert result["score"] > 0.8
         assert result["primary_geometry_overwritten"] is False
 
+    def test_multiview_visual_hull_contributes_observed_reprojection(self, tmp_path):
+        geom = tmp_path / "geometry"
+        geom.mkdir()
+        (geom / "multiview.json").write_text(json.dumps({
+            "enabled": True,
+            "observations": [{"view_id": "view_001", "status": "success"}],
+            "matches": [],
+            "relative_camera_poses": {"view_001": {"value": [0, 45, 0]}},
+            "joint_optimization": {"visual_hull": {
+                "used": True,
+                "observed_view_reprojection_iou": {
+                    "view_000": 0.92, "view_001": 0.88},
+                "primary_observed_geometry_overwritten": False,
+            }},
+        }))
+        result = score_multiview(tmp_path)
+        assert result["joint_secondary_silhouette_iou"] == pytest.approx(0.9)
+        assert result["primary_geometry_overwritten"] is False
+        assert result["score"] > 0.7
+
     def test_hypothesis_source_and_rejection_audit(self, tmp_path):
         geom = tmp_path / "geometry"
         geom.mkdir()

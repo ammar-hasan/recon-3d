@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import platform
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from pydantic import BaseModel, Field
@@ -81,6 +81,20 @@ class MultiviewConfig(BaseModel):
     max_views: int = Field(default=8, ge=2, le=32)
     max_part_match_cost: float = Field(default=0.85, gt=0.0, le=2.0)
     min_pose_baseline_deg: float = Field(default=5.0, ge=0.0, le=180.0)
+    joint_refinement_enabled: bool = True
+    yaw_step_deg: int = Field(default=15, ge=5, le=90)
+    depth_scale_candidates: List[float] = Field(
+        default_factory=lambda: [0.5, 1.0, 2.0, 3.0, 4.0, 6.0])
+    joint_render_resolution: int = Field(default=256, ge=64, le=512)
+    min_joint_iou_gain: float = Field(default=0.005, ge=0.0, le=1.0)
+    max_primary_iou_drop: float = Field(default=0.005, ge=0.0, le=0.1)
+    visual_hull_enabled: bool = True
+    visual_hull_grid_size: int = Field(default=48, ge=24, le=128)
+    visual_hull_depth_extent: float = Field(default=1.5, gt=0.1, le=4.0)
+    visual_hull_mask_dilation_px: int = Field(default=1, ge=0, le=8)
+    visual_hull_min_primary_iou: float = Field(default=0.80, ge=0.0, le=1.0)
+    visual_hull_min_secondary_iou: float = Field(default=0.70, ge=0.0, le=1.0)
+    visual_hull_box_symmetry_prior_enabled: bool = True
 
 
 class HypothesisConfig(BaseModel):

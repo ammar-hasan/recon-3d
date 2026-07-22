@@ -814,8 +814,20 @@ def score_multiview(project_dir: Path) -> Dict[str, Any]:
     view_success = len(successful) / max(len(observations), 1)
     pose_coverage = pose_count / max(len(successful), 1)
     confidence = float(np.mean(match_conf)) if match_conf else 0.0
-    score = 0.35 * view_success + 0.25 * min(1.0, pose_coverage) + 0.40 * confidence
     joint = data.get("joint_optimization") or {}
+    joint_iou = joint.get("selected_mean_silhouette_iou")
+    visual_hull = joint.get("visual_hull") or {}
+    if joint_iou is None and visual_hull.get("used"):
+        values = list((visual_hull.get(
+            "observed_view_reprojection_iou") or {}).values())
+        if values:
+            joint_iou = float(np.mean([float(value) for value in values]))
+    if joint_iou is None:
+        score = (0.35 * view_success + 0.25 * min(1.0, pose_coverage)
+                 + 0.40 * confidence)
+    else:
+        score = (0.20 * view_success + 0.20 * min(1.0, pose_coverage)
+                 + 0.20 * confidence + 0.40 * float(joint_iou))
     return {
         "available": True,
         "source_views": len(observations) + 1,
@@ -824,7 +836,11 @@ def score_multiview(project_dir: Path) -> Dict[str, Any]:
         "mean_match_confidence": confidence,
         "relative_pose_coverage": pose_coverage,
         "joint_optimization": joint,
-        "primary_geometry_overwritten": joint.get("primary_geometry_overwritten"),
+        "joint_secondary_silhouette_iou": joint_iou,
+        "primary_geometry_overwritten": joint.get(
+            "primary_observed_geometry_overwritten",
+            joint.get("primary_geometry_overwritten",
+                      visual_hull.get("primary_observed_geometry_overwritten"))),
         "score": score,
     }
 

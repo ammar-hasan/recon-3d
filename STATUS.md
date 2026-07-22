@@ -1,10 +1,12 @@
 # STATUS — Image-to-Editable-3D Reconstruction Pipeline
 
-Last updated: 2026-07-23 after the clean final benchmark.
+Last updated: 2026-07-23 after calibrated multiview held-out evaluation.
 
 ## Current outcome
 
-The structured MVP is complete and passes its automated acceptance suite.
+The structured single-view Level C benchmark is complete and passes its
+automated acceptance suite. The repository's broader `GOAL.md` success
+definition is still in progress because `EVAL.md` requires more than the MVP.
 
 - Fresh Level C benchmark: **18/18 MVP hard-gate passes**.
 - Mean final silhouette IoU: **0.910**.
@@ -14,8 +16,12 @@ The structured MVP is complete and passes its automated acceptance suite.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **236 passed, 1 skipped**, including real Blender build,
+- Regression suite: **243 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
+- Calibrated two-evidence-view `box_01`: primary IoU **0.962** and genuinely
+  held-out `+90°` IoU **0.819** (target ≥ 0.75).
+- Two-view maximal-hull ablation: held-out IoU **0.532**; the explicit
+  source-labelled enclosure symmetry hypothesis contributes **+0.287 IoU**.
 
 The reproducible results and per-case table are in
 [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md). Generated projects and raw result
@@ -36,7 +42,9 @@ directories remain gitignored.
   geometric/semantic inference, and generated hypotheses.
 - Phase 6 multiview support independently processes secondary views, builds
   source-labelled cross-view part matches, estimates relative pose and scale
-  consensus, and preserves primary observed primitives.
+  consensus, and preserves primary observed primitives. Calibrated views now
+  alter shared 3D geometry through voxel-carved visual hulls; original semantic
+  parts remain hidden editable guides.
 - Phase 7 hidden-geometry support proposes and audits revolve
   cross-sections, hidden-side continuations, mirror completions, and partial
   occlusion completions. Hypothesis confidence is capped at 0.5 and every
@@ -56,8 +64,11 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The final test run produced `236 passed, 1 skipped`. The final E2E run produced
+The latest test run produced `243 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
+
+The calibrated multiview commands, exact-camera held-out result, and ablation
+are recorded in [`MULTIVIEW_REPORT.md`](MULTIVIEW_REPORT.md).
 
 ## Additional ablation evidence
 
@@ -74,14 +85,14 @@ The depth/normals ablation config is tracked at
 
 ## Known limits and next research work
 
-These do not block the synthetic MVP result, but they should not be hidden:
+These do not block the synthetic single-view benchmark result, but they do
+block the full `GOAL.md` success definition:
 
 1. The 18-case benchmark is synthetic and uses a supplied mask and label for
    the reconstruction path. Unguided segmentation is scored where available,
    but real-photo coverage remains limited.
-2. The benchmark is single-view. Multiview fusion has unit/integration and
-   real two-image smoke coverage, not a calibrated multiview ground-truth
-   benchmark.
+2. Calibrated multiview ground truth and a held-out view now exist for
+   `box_01`, but cross-family calibrated coverage is not yet established.
 3. Mean camera score is 0.500 because single-view focal length/physical scale
    remain weakly observable; the system reports that uncertainty rather than
    inventing calibration.
@@ -89,9 +100,10 @@ These do not block the synthetic MVP result, but they should not be hidden:
    and `table_01` retain internal `partial_success` status because the
    pipeline's preferred refinement target is 0.90 even though every MVP hard
    gate passes.
-5. The full 11-way ablation matrix, opaque image-to-mesh/VLM baselines, and
-   human edit-task evaluation from `EVAL.md` remain research evaluation work.
-   Only the concrete ablations listed above have been run.
+5. The full 11-way ablation matrix, opaque image-to-mesh/VLM baselines,
+   failure-detection evaluation, and human edit-task evaluation from
+   `EVAL.md` remain research evaluation work. Only the concrete ablations
+   listed above have been run.
 
 ## Repository checkpoints
 

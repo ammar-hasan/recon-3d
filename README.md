@@ -169,6 +169,8 @@ Supported construction families include extrusion, revolution, sweep, primitive 
 
 When a run contains more than one image, Recon3D processes every secondary view through segmentation, tracing, primitive fitting, semantic decomposition, depth, and camera estimation. It writes a shared-part graph, relative camera poses, scale consensus, and joint matching residuals to `geometry/multiview.json`. Secondary evidence annotates the primary graph; it never silently replaces primary observed geometry.
 
+Calibrated azimuths can be supplied by repeating `--view-azimuth` once per image. With at least two calibrated silhouettes, the pipeline voxel-carves a shared visual-hull mesh and keeps the original semantic construction parts as hidden editable guides. When only relative azimuths are known, the hull uses an explicitly recorded orthographic camera assumption. Enclosure-specific mirror compactness is recorded as `semantic_prior` and can be disabled for ablation. The held-out evaluator fixes primary camera framing and renders an unused view without target-side alignment. See [the calibrated multiview report](MULTIVIEW_REPORT.md).
+
 Hidden-side completion remains explicitly hypothetical. Procedural cross-sections, rear-surface continuations, mirror completions, and occlusion completions are scored against operator, constraint, and multiview evidence. Every proposal is accepted or rejected in `geometry/hypotheses.json`, uses `source: generated_hypothesis`, and is capped at confidence 0.5.
 
 ### 4. Build, check, and improve

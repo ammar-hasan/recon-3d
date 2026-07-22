@@ -1057,6 +1057,29 @@ def validate_plan(plan: ConstructionPlan) -> List[str]:
             if origin is not None:
                 _check_finite_seq(origin, "axis.origin", p.id, errors)
         if p.profile is not None:
+            if p.profile.get("type") == "mesh":
+                vertices = p.profile.get("vertices")
+                faces = p.profile.get("faces")
+                if not isinstance(vertices, list) or len(vertices) < 4:
+                    errors.append(
+                        "part '%s': mesh profile needs at least 4 vertices" % p.id)
+                elif not all(
+                        isinstance(vertex, (list, tuple)) and len(vertex) == 3
+                        and all(_is_finite_number(v) for v in vertex)
+                        for vertex in vertices):
+                    errors.append(
+                        "part '%s': mesh profile contains an invalid vertex" % p.id)
+                if not isinstance(faces, list) or len(faces) < 4:
+                    errors.append(
+                        "part '%s': mesh profile needs at least 4 faces" % p.id)
+                elif not all(
+                        isinstance(face, (list, tuple)) and len(face) >= 3
+                        and all(isinstance(i, int) and 0 <= i < len(vertices)
+                                for i in face)
+                        for face in faces):
+                    errors.append(
+                        "part '%s': mesh profile contains an invalid face" % p.id)
+                continue
             points = p.profile.get("points")
             if not isinstance(points, list) or len(points) < 3:
                 errors.append(

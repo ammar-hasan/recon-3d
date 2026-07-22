@@ -26,7 +26,9 @@ def _ensure_dirs(project_dir: Path) -> None:
 
 def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
     from . import (blender_codegen, camera, constraints, construction_plan, crop,
-                   depth, hypotheses, input_manager, multiview, operators, preprocess, primitives,
+                   depth, hypotheses, input_manager, multiview,
+                   multiview_refinement, multiview_visual_hull, operators,
+                   preprocess, primitives,
                    refinement, runner, segmentation, semantic_parts, sketch_graph,
                    svg_cleanup, validation, vectorize)
 
@@ -88,6 +90,10 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
             hypothesis_report, project_dir / "geometry" / "hypotheses.json")
         SchemaIO.save_json(graph, project_dir / "geometry" / "sketch_graph.json")
         plan = construction_plan.build_plan(graph, cam, dep, spec, cfg)
+        plan, mv_result, visual_hull_used = (
+            multiview_visual_hull.augment_plan_with_visual_hull(
+                plan, mv_result, seg, cfg))
+        SchemaIO.save_json(mv_result, project_dir / "geometry" / "multiview.json")
         errors = construction_plan.validate_plan(plan)
         if errors:
             raise ValueError("construction plan invalid: " + "; ".join(errors))
@@ -98,6 +104,26 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         bman = runner.run_blender(script, str(project_dir), cfg)
         if not bman.success:
             raise RuntimeError("blender execution failed: " + "; ".join(bman.errors))
+
+        # Phase 6 joint geometry step: secondary silhouettes solve relative
+        # yaw and the shared hidden depth extent.  Only inferred Z scale may
+        # change; primary observed XY curves remain untouched.
+        if visual_hull_used:
+            rebuild = False
+        else:
+            plan, mv_result, rebuild = multiview_refinement.refine_multiview_geometry(
+                plan, mv_result, str(project_dir), cfg, seg, crop_meta)
+        SchemaIO.save_json(mv_result, project_dir / "geometry" / "multiview.json")
+        if rebuild:
+            SchemaIO.save_yaml(
+                plan, project_dir / "geometry" / "construction_plan.yaml")
+            script = blender_codegen.generate_blender_script(
+                plan, str(project_dir / "blender"), cfg)
+            bman = runner.run_blender(script, str(project_dir), cfg)
+            if not bman.success:
+                raise RuntimeError(
+                    "multiview-refined blender execution failed: "
+                    + "; ".join(bman.errors))
 
         # Stage 17-18: validation + refinement
         val = validation.validate_reconstruction(bman, plan, seg, crop_meta,
@@ -135,6 +161,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--mask", default=None, help="user-supplied mask")
     ap.add_argument("--dimension", type=float, default=None, help="known physical size")
     ap.add_argument("--dimension-axis", default=None)
+    ap.add_argument(
+        "--view-azimuth", action="append", type=float, default=None,
+        help="calibrated camera-orbit azimuth in degrees; repeat once per --image",
+    )
     ap.add_argument("--out", default="projects/run")
     ap.add_argument("--config", default=None)
     args = ap.parse_args(argv)
@@ -149,6 +179,7 @@ def main(argv: list[str] | None = None) -> int:
         mask_path=args.mask,
         known_dimension=args.dimension,
         known_dimension_axis=args.dimension_axis,
+        view_azimuths_deg=args.view_azimuth,
         output_dir=args.out,
     )
     manifest = run_pipeline(spec, cfg)

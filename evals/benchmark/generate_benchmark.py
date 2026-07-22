@@ -29,6 +29,7 @@ import argparse
 import concurrent.futures
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -176,7 +177,8 @@ REQUIRED_FILES = ("input.png", "mask.png", "bbox.json", "camera.json",
 # ---------------------------------------------------------------------------
 
 def build_case(case: Dict[str, Any], blender: str, out_root: Path,
-               resolution: int, timeout: int = 600) -> Dict[str, Any]:
+               resolution: int, timeout: int = 600,
+               view_offsets: Optional[List[float]] = None) -> Dict[str, Any]:
     """Run one case end-to-end; returns a status dict (never raises)."""
     case_id = case["id"]
     case_dir = out_root / case_id
@@ -187,10 +189,14 @@ def build_case(case: Dict[str, Any], blender: str, out_root: Path,
                  "normals.png", "reference.glb", "camera.json", "bbox.json",
                  "dimensions.json", "parts.json", "meta.json"):
         (case_dir / name).unlink(missing_ok=True)
+    views_dir = case_dir / "views"
+    if views_dir.exists():
+        shutil.rmtree(str(views_dir))
     seed = abs(hash(case_id)) % (2 ** 31)
     spec = {"case_id": case_id, "builder": case["builder"],
             "difficulty": case["difficulty"], "seed": seed,
-            "resolution": resolution}
+            "resolution": resolution,
+            "view_azimuth_offsets_deg": list(view_offsets or [])}
     spec_path = case_dir / "build_spec.json"
     spec_path.write_text(json.dumps(spec, indent=2))
 
@@ -223,22 +229,10 @@ def build_case(case: Dict[str, Any], blender: str, out_root: Path,
 
 def _postprocess(case: Dict[str, Any], case_dir: Path) -> None:
     """Threshold the mask, compute the bbox, write the remaining GT files."""
-    raw = cv2.imread(str(case_dir / "mask_raw.png"), cv2.IMREAD_GRAYSCALE)
-    if raw is None:
-        raise RuntimeError("mask_raw.png missing or unreadable")
-    mask = (raw > 127).astype(np.uint8) * 255
-    fg = int((mask > 0).sum())
-    if fg < 100:
-        raise RuntimeError("mask nearly empty (%d px)" % fg)
-    cv2.imwrite(str(case_dir / "mask.png"), mask)
-    (case_dir / "mask_raw.png").unlink(missing_ok=True)
-
-    ys, xs = np.where(mask > 0)
-    bbox = {"x0": int(xs.min()), "y0": int(ys.min()),
-            "x1": int(xs.max()) + 1, "y1": int(ys.max()) + 1,
-            "source": "rendered_mask", "image_size": [int(mask.shape[1]),
-                                                      int(mask.shape[0])]}
-    (case_dir / "bbox.json").write_text(json.dumps(bbox, indent=2))
+    _postprocess_mask(case_dir)
+    for view_dir in sorted((case_dir / "views").glob("view_*")):
+        if view_dir.is_dir():
+            _postprocess_mask(view_dir)
 
     (case_dir / "dimensions.json").write_text(json.dumps(case["dims"], indent=2))
 
@@ -262,6 +256,26 @@ def _postprocess(case: Dict[str, Any], case_dir: Path) -> None:
             "tags": case["tags"], "known_failure_flags": case["failure_flags"],
             "generator": "evals/benchmark/generate_benchmark.py"}
     (case_dir / "meta.json").write_text(json.dumps(meta, indent=2))
+
+
+def _postprocess_mask(directory: Path) -> None:
+    """Convert one rendered raw mask into a binary mask and tight bbox."""
+    raw = cv2.imread(str(directory / "mask_raw.png"), cv2.IMREAD_GRAYSCALE)
+    if raw is None:
+        raise RuntimeError("%s/mask_raw.png missing or unreadable" % directory)
+    mask = (raw > 127).astype(np.uint8) * 255
+    fg = int((mask > 0).sum())
+    if fg < 100:
+        raise RuntimeError("mask nearly empty (%d px)" % fg)
+    cv2.imwrite(str(directory / "mask.png"), mask)
+    (directory / "mask_raw.png").unlink(missing_ok=True)
+
+    ys, xs = np.where(mask > 0)
+    bbox = {"x0": int(xs.min()), "y0": int(ys.min()),
+            "x1": int(xs.max()) + 1, "y1": int(ys.max()) + 1,
+            "source": "rendered_mask", "image_size": [int(mask.shape[1]),
+                                                      int(mask.shape[0])]}
+    (directory / "bbox.json").write_text(json.dumps(bbox, indent=2))
 
 
 # ---------------------------------------------------------------------------
@@ -297,6 +311,26 @@ def verify_case(case_dir: Path) -> List[str]:
             json.loads((case_dir / jf).read_text())
         except Exception as exc:  # noqa: BLE001
             problems.append("%s invalid: %r" % (jf, exc))
+    try:
+        spec = json.loads((case_dir / "build_spec.json").read_text())
+        offsets = spec.get("view_azimuth_offsets_deg") or []
+    except Exception:
+        offsets = []
+    for index, offset in enumerate(offsets, start=1):
+        view_dir = case_dir / "views" / ("view_%03d" % index)
+        for name in ("input.png", "mask.png", "bbox.json", "camera.json",
+                     "depth.png", "normals.png"):
+            if not (view_dir / name).exists():
+                problems.append("missing views/view_%03d/%s" % (index, name))
+        camera_path = view_dir / "camera.json"
+        if camera_path.exists():
+            try:
+                camera_data = json.loads(camera_path.read_text())
+                actual = float(camera_data.get("relative_azimuth_deg"))
+                if abs(actual - float(offset)) > 1e-6:
+                    problems.append("view_%03d azimuth mismatch" % index)
+            except Exception as exc:  # noqa: BLE001
+                problems.append("view_%03d camera invalid: %r" % (index, exc))
     return problems
 
 
@@ -312,6 +346,10 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="'all' or comma-separated case ids")
     ap.add_argument("--workers", type=int, default=1)
     ap.add_argument("--resolution", type=int, default=640)
+    ap.add_argument(
+        "--view-offsets", default="",
+        help="comma-separated additional calibrated camera azimuths in degrees",
+    )
     ap.add_argument("--check-only", action="store_true",
                     help="only verify an existing dataset")
     args = ap.parse_args(argv)
@@ -331,6 +369,12 @@ def main(argv: Optional[List[str]] = None) -> int:
         selected = [c for c in CASES if c["id"] in wanted]
 
     results: List[Dict[str, Any]] = []
+    try:
+        view_offsets = [float(v.strip()) for v in args.view_offsets.split(",")
+                        if v.strip()]
+    except ValueError:
+        print("--view-offsets must be comma-separated numbers")
+        return 2
     if not args.check_only:
         if not Path(args.blender).exists():
             print("blender not found at %s" % args.blender)
@@ -338,7 +382,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         workers = max(1, args.workers)
         with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
             futs = {pool.submit(build_case, case, args.blender, out_root,
-                                args.resolution): case for case in selected}
+                                args.resolution, 600, view_offsets): case
+                    for case in selected}
             for fut in concurrent.futures.as_completed(futs):
                 res = fut.result()
                 results.append(res)

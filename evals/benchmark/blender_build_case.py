@@ -713,6 +713,55 @@ def set_black_world():
     return old
 
 
+def restore_world(state):
+    bg = bpy.context.scene.world.node_tree.nodes.get("Background")
+    bg.inputs[0].default_value = state[0]
+    bg.inputs[1].default_value = state[1]
+
+
+def camera_payload(cam_ob, target, radius, dmin, dmax,
+                   relative_azimuth_deg=0.0):
+    cam = cam_ob.data
+    cam_dist = (cam_ob.location - target).length
+    return {
+        "resolution": [RES, RES],
+        "engine": "BLENDER_EEVEE",
+        "projection": "perspective",
+        "lens_mm": cam.lens,
+        "sensor_width_mm": cam.sensor_width,
+        "focal_length_px": cam.lens / cam.sensor_width * RES,
+        "principal_point_px": [RES / 2.0, RES / 2.0],
+        "camera_location": list(cam_ob.location),
+        "camera_rotation_quaternion_wxyz": list(cam_ob.rotation_quaternion),
+        "camera_matrix_world": [list(r) for r in cam_ob.matrix_world],
+        "look_at_target": [target.x, target.y, target.z],
+        "camera_distance": cam_dist,
+        "frame_radius": radius,
+        "relative_azimuth_deg": float(relative_azimuth_deg),
+        "depth_min": dmin,
+        "depth_max": dmax,
+        "depth_encoding": ("16-bit PNG; d = depth_min + v/65535*"
+                           "(depth_max-depth_min); 0 = background"),
+        "normals_encoding": ("8-bit PNG; n_cam = v/255*2-1 "
+                             "(camera space); 0,0,0 = background"),
+        "difficulty": DIFF,
+        "seed": SPEC["seed"],
+    }
+
+
+def orbit_camera(cam_ob, target, base_location, azimuth_deg):
+    angle = math.radians(float(azimuth_deg))
+    rel = base_location - target
+    ca, sa = math.cos(angle), math.sin(angle)
+    cam_ob.location = (
+        target.x + ca * rel.x - sa * rel.y,
+        target.y + sa * rel.x + ca * rel.y,
+        target.z + rel.z,
+    )
+    point_at(cam_ob, target)
+    bpy.context.view_layer.update()
+
+
 def main():
     reset_scene()
     setup_materials()
@@ -745,7 +794,7 @@ def main():
     hidden = [ground] + clutter
     for o in hidden:
         o.hide_render = True
-    set_black_world()
+    world_state = set_black_world()
 
     # 2) mask (white emission on black)
     view_layer.material_override = emission_override("MaskOverride", (1, 1, 1))
@@ -765,34 +814,44 @@ def main():
     view_layer.material_override = None
 
     # camera ground truth
-    cam = cam_ob.data
-    focal_px = cam.lens / cam.sensor_width * RES
-    camera_gt = {
-        "resolution": [RES, RES],
-        "engine": "BLENDER_EEVEE",
-        "projection": "perspective",
-        "lens_mm": cam.lens,
-        "sensor_width_mm": cam.sensor_width,
-        "focal_length_px": focal_px,
-        "principal_point_px": [RES / 2.0, RES / 2.0],
-        "camera_location": list(cam_ob.location),
-        "camera_rotation_quaternion_wxyz": list(cam_ob.rotation_quaternion),
-        "camera_matrix_world": [list(r) for r in cam_ob.matrix_world],
-        "look_at_target": [target.x, target.y, target.z],
-        "camera_distance": cam_dist,
-        "frame_radius": radius,
-        "depth_min": dmin,
-        "depth_max": dmax,
-        "depth_encoding": ("16-bit PNG; d = depth_min + v/65535*(depth_max-depth_min); "
-                           "0 = background"),
-        "normals_encoding": ("8-bit PNG; n_cam = v/255*2-1 (camera space); "
-                             "0,0,0 = background"),
-        "part_object_names": part_names,
-        "difficulty": DIFF,
-        "seed": SPEC["seed"],
-    }
+    camera_gt = camera_payload(cam_ob, target, radius, dmin, dmax)
+    camera_gt["part_object_names"] = part_names
     with open(os.path.join(OUT_DIR, "camera.json"), "w") as f:
         json.dump(camera_gt, f, indent=2)
+
+    # Optional multiview evidence and held-out views.  Each view keeps the
+    # same calibrated orbit radius and target; only azimuth changes, making
+    # relative pose exact and independently scoreable.
+    base_location = cam_ob.location.copy()
+    for index, offset in enumerate(SPEC.get("view_azimuth_offsets_deg", []),
+                                   start=1):
+        view_dir = os.path.join(OUT_DIR, "views", "view_%03d" % index)
+        os.makedirs(view_dir, exist_ok=True)
+        orbit_camera(cam_ob, target, base_location, offset)
+
+        view_layer.material_override = None
+        for o in hidden:
+            o.hide_render = False
+        restore_world(world_state)
+        render_to(os.path.join(view_dir, "input.png"))
+
+        for o in hidden:
+            o.hide_render = True
+        set_black_world()
+        view_layer.material_override = emission_override(
+            "MaskOverride_%03d" % index, (1, 1, 1))
+        render_to(os.path.join(view_dir, "mask_raw.png"))
+        view_layer.material_override = depth_override(dmin, dmax)
+        render_to(os.path.join(view_dir, "depth.png"), color_depth="16")
+        view_layer.material_override = normals_override()
+        render_to(os.path.join(view_dir, "normals.png"))
+        with open(os.path.join(view_dir, "camera.json"), "w") as f:
+            json.dump(camera_payload(cam_ob, target, radius, dmin, dmax,
+                                     relative_azimuth_deg=offset), f, indent=2)
+
+    cam_ob.location = base_location
+    point_at(cam_ob, target)
+    bpy.context.view_layer.update()
 
     print("BUILD_OK parts=%d" % len(built["parts"]))
 

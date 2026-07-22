@@ -128,6 +128,9 @@ def fuse_multiview(
         view_spec = spec.model_copy(update={
             "image_paths": [loaded.path], "mask_path": None,
             "box": None, "point": None, "output_dir": str(view_root),
+            "view_azimuths_deg": ([spec.view_azimuths_deg[index]]
+                                   if spec.view_azimuths_deg is not None
+                                   else None),
         })
         view_bundle = InputBundle(spec=view_spec, images=[loaded],
                                   warnings=list(bundle.warnings))
@@ -138,6 +141,7 @@ def fuse_multiview(
             SchemaIO.save_json(seg, view_root / "segmentation" / "segmentation_result.json")
             crop_meta, crop_rgba, crop_mask = crop.make_crop(
                 seg, str(view_root / "segmentation"), cfg)
+            crop_meta_path = view_root / "segmentation" / "crop_metadata.json"
             layers_img = preprocess.preprocess(
                 crop_rgba, crop_mask, str(view_root / "segmentation"), cfg)
             layers = vectorize.vectorize(layers_img, str(view_root / "traces"), cfg)
@@ -157,29 +161,44 @@ def fuse_multiview(
             all_matches.extend(matches)
             residuals.extend(m.geometric_cost for m in matches)
 
-            primary_rot, secondary_rot = _rotation(primary_camera), _rotation(cam)
-            relative = [secondary_rot[i] - primary_rot[i] for i in range(3)]
-            baseline = float(np.linalg.norm(relative))
-            result.relative_camera_poses[view_id] = EvidencedValue(
-                value=relative, unit="deg",
-                source=(EvidenceSource.ESTIMATED_FROM_CAMERA
-                        if baseline >= cfg.multiview.min_pose_baseline_deg
-                        else EvidenceSource.UNKNOWN),
-                confidence=min(0.85, 0.25 + baseline / 120.0),
-                note="secondary object rotation minus primary object rotation",
-            )
+            calibrated = spec.view_azimuths_deg
+            if calibrated is not None and index < len(calibrated):
+                relative = [0.0, float(calibrated[index] - calibrated[0]), 0.0]
+                baseline = abs(relative[1])
+                result.relative_camera_poses[view_id] = EvidencedValue(
+                    value=relative, unit="deg", source=EvidenceSource.USER_SUPPLIED,
+                    confidence=1.0,
+                    note="calibrated camera-orbit azimuth relative to primary view",
+                )
+            else:
+                primary_rot, secondary_rot = (_rotation(primary_camera),
+                                               _rotation(cam))
+                relative = [secondary_rot[i] - primary_rot[i] for i in range(3)]
+                baseline = float(np.linalg.norm(relative))
+                result.relative_camera_poses[view_id] = EvidencedValue(
+                    value=relative, unit="deg",
+                    source=(EvidenceSource.ESTIMATED_FROM_CAMERA
+                            if baseline >= cfg.multiview.min_pose_baseline_deg
+                            else EvidenceSource.UNKNOWN),
+                    confidence=min(0.85, 0.25 + baseline / 120.0),
+                    note="secondary object rotation minus primary object rotation",
+                )
 
-            pwidth = max(1, primary_seg.bbox[2] - primary_seg.bbox[0])
-            swidth = max(1, seg.bbox[2] - seg.bbox[0])
-            image_scale = float(pwidth) / float(swidth)
+            pheight = max(1, primary_seg.bbox[3] - primary_seg.bbox[1])
+            sheight = max(1, seg.bbox[3] - seg.bbox[1])
+            image_scale = float(pheight) / float(sheight)
             scale_samples.append(image_scale)
             observation.graph_path = graph_path
+            observation.mask_path = seg.mask_path
+            observation.crop_metadata_path = str(crop_meta_path)
+            observation.object_bbox = seg.bbox
             observation.segmentation_confidence = seg.confidence
             observation.camera = cam
             observation.scale_to_primary = EvidencedValue(
                 value=image_scale, source=EvidenceSource.FITTED_FROM_OBSERVATION,
                 confidence=min(0.8, 0.35 + 0.08 * len(matches)),
-                note="ratio of primary and secondary observed silhouette widths",
+                note=("primary/secondary silhouette-height ratio; upright "
+                      "camera-scale estimate"),
             )
             observation.warnings.extend(seg.warnings)
         except Exception as exc:  # one weak view must not destroy the primary run

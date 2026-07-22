@@ -65,6 +65,7 @@ class InputSpec(BaseModel):
     mask_path: Optional[str] = None
     known_dimension: Optional[float] = None              # physical units
     known_dimension_axis: Optional[str] = None           # "width"|"height"|"depth"|"diameter"
+    view_azimuths_deg: Optional[List[float]] = None       # one calibrated orbit angle per image
     output_dir: str = "projects/run"
 
 
@@ -326,6 +327,9 @@ class MultiViewObservation(BaseModel):
     view_id: str
     image_path: str
     graph_path: Optional[str] = None
+    mask_path: Optional[str] = None
+    crop_metadata_path: Optional[str] = None
+    object_bbox: Optional[Tuple[int, int, int, int]] = None
     segmentation_confidence: float = 0.0
     camera: Optional[CameraEstimate] = None
     scale_to_primary: EvidencedValue = Field(default_factory=EvidencedValue)
@@ -431,6 +435,7 @@ class PlanPart(BaseModel):
     transform: Dict[str, Any] = {}           # {location, rotation_deg, scale}
     material: MaterialSpec = Field(default_factory=MaterialSpec)
     visibility: Visibility = Visibility.VISIBLE
+    render_visible: bool = True
     evidence: EvidencedValue = Field(default_factory=EvidencedValue)
 
 

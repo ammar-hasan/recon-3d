@@ -108,13 +108,41 @@ def generate_report(project_dir: str | Path) -> str:
             lines += ["## Multiview Fusion", ""]
             if mv.enabled:
                 good = sum(o.status == "success" for o in mv.observations)
+                joint = mv.joint_optimization
+                visual_hull = joint.get("visual_hull") or {}
+                overwritten = joint.get(
+                    "primary_observed_geometry_overwritten",
+                    joint.get("primary_geometry_overwritten",
+                              visual_hull.get(
+                                  "primary_observed_geometry_overwritten", False)))
                 lines += [
                     f"- source views: {len(mv.observations) + 1}",
                     f"- successful secondary views: {good}",
                     f"- cross-view part matches: {len(mv.matches)}",
                     f"- primary observed geometry overwritten: "
-                    f"{_yn(bool(mv.joint_optimization.get('primary_geometry_overwritten')))}",
+                    f"{_yn(bool(overwritten))}",
                 ]
+                if joint.get("selected_mean_silhouette_iou") is not None:
+                    lines += [
+                        f"- joint secondary silhouette IoU: "
+                        f"{joint['selected_mean_silhouette_iou']:.3f}",
+                        f"- selected shared depth scale: "
+                        f"{joint.get('selected_depth_scale')}",
+                    ]
+                if visual_hull.get("used"):
+                    reprojection = visual_hull.get(
+                        "observed_view_reprojection_iou") or {}
+                    lines += [
+                        "- calibrated visual hull: yes",
+                        f"- visual-hull mesh: {visual_hull.get('vertex_count')} "
+                        f"vertices, {visual_hull.get('face_count')} faces",
+                        "- observed-view reprojection IoU: "
+                        + ", ".join(
+                            f"{key}={float(value):.3f}"
+                            for key, value in sorted(reprojection.items())),
+                        "- generated symmetry hypothesis: "
+                        f"{_yn(bool(visual_hull.get('generated_symmetry_hypothesis')))}",
+                    ]
             else:
                 lines.append("- single-view run; multiview fusion not activated")
             lines.append("")

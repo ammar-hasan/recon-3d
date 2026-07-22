@@ -227,6 +227,17 @@ def test_hint_validation(tmp_path):
     with pytest.raises(InputError, match="does not match"):
         input_manager.load_input(spec)
 
+    # calibrated multiview hints must align one-to-one with images
+    spec = InputSpec(
+        image_paths=[str(p), str(p)], output_dir=str(tmp_path / "o5"),
+        view_azimuths_deg=[0.0])
+    with pytest.raises(InputError, match="one angle per image"):
+        input_manager.load_input(spec)
+
+    spec = spec.model_copy(update={"view_azimuths_deg": [10.0, 55.0]})
+    bundle = input_manager.load_input(spec)
+    assert bundle.spec.view_azimuths_deg == [10.0, 55.0]
+
 
 # ---------------------------------------------------------------------------
 # Stage 2: segmentation

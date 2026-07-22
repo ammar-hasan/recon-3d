@@ -114,6 +114,12 @@ def load_input(spec: InputSpec) -> InputBundle:
     """
     if not spec.image_paths:
         raise InputError("InputSpec.image_paths is empty")
+    if (spec.view_azimuths_deg is not None
+            and len(spec.view_azimuths_deg) != len(spec.image_paths)):
+        raise InputError(
+            "view_azimuths_deg must contain one angle per image "
+            "(%d images, %d angles)" % (
+                len(spec.image_paths), len(spec.view_azimuths_deg)))
 
     input_dir = Path(spec.output_dir) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)

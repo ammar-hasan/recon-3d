@@ -211,6 +211,10 @@ def build_extrude(name, part, collection):
 
 def build_loft(name, part, collection, subsurf=False):
     profile = part.get("profile") or {}
+    if profile.get("type") == "mesh":
+        verts = profile.get("vertices") or []
+        faces = profile.get("faces") or []
+        return _new_mesh_object(name, verts, faces, collection)
     sections = profile.get("profiles")
     if not sections:
         # single cross-section lofted between +/- depth/2
@@ -390,6 +394,7 @@ def set_custom_props(obj, part):
     obj["recon3d_params"] = json.dumps(params, sort_keys=True)
     if part.get("profile") is not None:
         obj["recon3d_profile"] = json.dumps(part["profile"], sort_keys=True)
+    obj["recon3d_render_visible"] = bool(part.get("render_visible", True))
 
 
 # --------------------------------------------------------------------------
@@ -542,6 +547,9 @@ def main():
         mat = get_material(part.get("material") or {})
         if hasattr(obj.data, "materials"):
             obj.data.materials.append(mat)
+        if not part.get("render_visible", True):
+            obj.hide_render = True
+            obj.hide_set(True)
         built[pid] = obj
 
     bpy.context.view_layer.objects.active = root
@@ -553,6 +561,7 @@ def main():
         filepath=GLB_PATH,
         export_format='GLB',
         export_apply=False,          # keep modifiers un-applied
+        use_visible=True,
         export_yup=True,
         export_extras=True,          # carry custom properties
         export_cameras=False,
