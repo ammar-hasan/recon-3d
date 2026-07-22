@@ -322,6 +322,59 @@ class DepthEvidence(BaseModel):
     notes: List[str] = []
 
 
+class MultiViewObservation(BaseModel):
+    view_id: str
+    image_path: str
+    graph_path: Optional[str] = None
+    segmentation_confidence: float = 0.0
+    camera: Optional[CameraEstimate] = None
+    scale_to_primary: EvidencedValue = Field(default_factory=EvidencedValue)
+    status: str = "success"
+    warnings: List[str] = []
+
+
+class CrossViewPartMatch(BaseModel):
+    primary_part_id: str
+    secondary_part_id: str
+    view_id: str
+    part_class: str
+    geometric_cost: float = Field(ge=0.0)
+    confidence: float = Field(ge=0.0, le=1.0)
+    source: EvidenceSource = EvidenceSource.FITTED_FROM_OBSERVATION
+
+
+class MultiViewResult(BaseModel):
+    enabled: bool = False
+    primary_view_id: str = "view_000"
+    observations: List[MultiViewObservation] = []
+    matches: List[CrossViewPartMatch] = []
+    shared_part_graph: Dict[str, List[Dict[str, Any]]] = {}
+    relative_camera_poses: Dict[str, EvidencedValue] = {}
+    consistent_scale: EvidencedValue = Field(default_factory=EvidencedValue)
+    joint_optimization: Dict[str, Any] = {}
+    warnings: List[str] = []
+
+
+class HypothesisCandidate(BaseModel):
+    id: str
+    part_id: str
+    hypothesis_type: str
+    proposal: Dict[str, Any] = {}
+    source: EvidenceSource = EvidenceSource.GENERATED_HYPOTHESIS
+    score: float = Field(ge=0.0, le=1.0)
+    confidence: float = Field(ge=0.0, le=0.5)
+    accepted: bool = False
+    supporting_evidence: List[str] = []
+    rejection_reasons: List[str] = []
+
+
+class HypothesisReport(BaseModel):
+    candidates: List[HypothesisCandidate] = []
+    accepted_ids: List[str] = []
+    rejected_ids: List[str] = []
+    scoring_policy: Dict[str, Any] = {}
+
+
 # ---------------------------------------------------------------------------
 # Stage 13/14: operators + construction plan
 # ---------------------------------------------------------------------------

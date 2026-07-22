@@ -30,6 +30,7 @@ from .schemas import (
     PrimitiveType,
     SemanticPart,
     SketchGraph,
+    TraceLayerName,
     Visibility,
 )
 
@@ -54,10 +55,11 @@ _ROOT_CLASS_BY_KEYWORD = {
 
 _GUIDED_ROLES = {
     "bottle": ("cap",), "box": ("lid",),
-    "bracket": ("mounting_hole",), "gear": ("tooth",),
+    "bracket": ("mounting_hole",), "gear": ("tooth", "center_bore"),
     "mug": ("handle",), "cup": ("handle",),
     "sign": ("logo_relief",), "logo": ("logo_relief",),
-    "table": ("leg",), "pipe_elbow": ("flange",), "pipe": ("flange",),
+    "table": ("leg",),
+    "pipe_elbow": ("flange", "flange"), "pipe": ("flange", "flange"),
     "chair": ("backrest", "leg"),
     "crate": ("corner_post", "side_slat"),
     "lamp": ("lower_arm", "upper_arm", "shade"),
@@ -441,12 +443,19 @@ class HeuristicSemanticBackend(SemanticBackend):
         available = [p for p in leftover if _center(p) is not None]
         if not self._target_label or not roles or not available:
             return []
-        all_pts = [_poly(p) for p in available if len(_poly(p))]
+        root_prims = [self._primitive_by_id[i] for i in root.primitive_ids
+                      if i in self._primitive_by_id]
+        root_pts = [_poly(p) for p in root_prims if len(_poly(p))]
+        all_pts = root_pts or [_poly(p) for p in available if len(_poly(p))]
         if all_pts:
             pts = np.concatenate(all_pts)
             object_center = pts.mean(axis=0)
+            object_lo = pts.min(axis=0)
+            object_hi = pts.max(axis=0)
         else:
             object_center = np.array([0.5, 0.5])
+            object_lo = np.array([0.0, 0.0])
+            object_hi = np.array([1.0, 1.0])
 
         def features(p):
             pts = _poly(p)
@@ -475,11 +484,20 @@ class HeuristicSemanticBackend(SemanticBackend):
                 return (-c[1], -elong, -dist, p.id)
             if role == "side_slat":
                 return (-w / max(h, 1e-9), -dist, p.id)
+            if role == "center_bore":
+                plausible = (dist <= 0.18 * scale
+                             and _radius(p) >= 0.015 * scale)
+                return (ring_penalty, 0.0 if plausible else 1.0,
+                        -area, dist, p.id)
             if role == "mounting_hole":
-                return (ring_penalty, _radius(p), dist, p.id)
-            if role in ("handle", "flange", "tooth"):
-                return (-dist, ring_penalty if role == "flange" else -elong,
-                        -area, p.id)
+                return (ring_penalty, dist, _radius(p), p.id)
+            if role == "flange":
+                inside = bool(np.all(c >= object_lo - 0.05 * scale)
+                              and np.all(c <= object_hi + 0.05 * scale))
+                return (ring_penalty, 0.0 if inside else 1.0,
+                        -area, -dist, p.id)
+            if role in ("handle", "tooth"):
+                return (-dist, -elong, -area, p.id)
             if role == "logo_relief":
                 return (dist, -area, p.id)
             if role == "lower_arm":
@@ -528,6 +546,7 @@ class HeuristicSemanticBackend(SemanticBackend):
     def decompose(self, graph: SketchGraph, image: Optional[np.ndarray],
                   spec: InputSpec, cfg: PipelineConfig) -> List[SemanticPart]:
         prims = list(graph.primitives)
+        self._primitive_by_id = {p.id: p for p in prims}
         self._class_counters = {}
         self.generated_constraints = []
         self._target_label = (spec.target_label or "").strip().lower() or None
@@ -597,8 +616,7 @@ class HeuristicSemanticBackend(SemanticBackend):
                 graph, radius_groups, rot, detected_spokes,
                 image, keywords, assigned)
         elif (len(radius_groups) >= 2
-              and (not keywords or bool(keywords.intersection(
-                  {"gear", "knob", "pipe", "pipe_elbow"})))):
+              and (not keywords or "knob" in keywords)):
             parts = self._decompose_ring_system(
                 graph, radius_groups, image, keywords, assigned)
         else:
@@ -829,6 +847,49 @@ class HeuristicSemanticBackend(SemanticBackend):
                 notes=["no closed silhouette primitive found"])
         self._inferred_defaults(root)
         parts = [root]
+
+        # A crate's open slat spacing is not an inferred construction detail:
+        # it is directly observed as child paths of the outer silhouette.
+        # Preserve each fitted hole as its own boolean-capable semantic part
+        # so the outer silhouette extrusion cannot turn the crate into a
+        # solid filled panel.
+        if keyword == "crate" and roots:
+            outer_area = max(areas.get(roots[0].id, 0.0), 1e-9)
+            root_polygon = _poly(roots[0])
+            for p in graph.primitives:
+                points = _poly(p)
+                candidate_area = (abs(cv2.contourArea(
+                    (points * 4096.0).astype(np.float32)))
+                    if len(points) >= 3 else 0.0)
+                center = _center(p)
+                inside_root = (
+                    center is not None and len(root_polygon) >= 3
+                    and cv2.pointPolygonTest(
+                        (root_polygon * 4096.0).astype(np.float32),
+                        (float(center[0] * 4096.0),
+                         float(center[1] * 4096.0)), False) >= 0
+                )
+                if (p.id in assigned
+                        or p.source_layer != TraceLayerName.SILHOUETTE
+                        or len(points) < 3
+                        or not inside_root
+                        # Cross-layer outer-silhouette retraces can be nested
+                        # by a few pixels; they are not negative space.
+                        or candidate_area / outer_area >= 0.25):
+                    continue
+                cutout = SemanticPart(
+                    id=self._pid("cutout"),
+                    part_class="cutout",
+                    primitive_ids=[p.id],
+                    visibility=Visibility.VISIBLE,
+                    appearance=None,
+                    confidence=max(0.5, float(p.confidence)),
+                    notes=["negative space directly observed as a silhouette hole"],
+                )
+                self._inferred_defaults(cutout)
+                self._link(root, cutout)
+                parts.append(cutout)
+                assigned.add(p.id)
 
         # nested closed primitives: rectangles -> panel/bezel, else insert
         nested = [p for p in closed if p.id not in assigned]

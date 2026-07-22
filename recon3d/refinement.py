@@ -29,6 +29,7 @@ from .schemas import (BlenderManifest, CameraEstimate, ConstructionPlan,
 # cumulative bounds for adjusted parameters
 _SCALE_BOUNDS = (0.5, 2.0)
 _STEP_LIMIT = 1.25           # max multiplicative change per iteration
+_SCALE_STEP_LIMIT = 1.02     # silhouette bbox ratios are noisy; avoid overshoot
 _DIST_BOUNDS = (0.5, 20.0)
 
 
@@ -61,6 +62,7 @@ def _diagnose(ref: np.ndarray, render: np.ndarray) -> Optional[Dict[str, float]]
         "dx_px": (b["cx"] - a["cx"]) * a["canvas_w"],  # render right of ref
         "dy_px": (b["cy"] - a["cy"]) * a["canvas_h"],  # render below ref
         "canvas_w": a["canvas_w"],
+        "ref_width_px": a["w"],
     }
 
 
@@ -70,6 +72,11 @@ def _diagnose(ref: np.ndarray, render: np.ndarray) -> Optional[Dict[str, float]]
 
 def _bounded_step(ratio: float) -> float:
     return min(_STEP_LIMIT, max(1.0 / _STEP_LIMIT, ratio))
+
+
+def _bounded_scale_step(ratio: float) -> float:
+    return min(_SCALE_STEP_LIMIT,
+               max(1.0 / _SCALE_STEP_LIMIT, ratio))
 
 
 def _get_global_scale(plan: ConstructionPlan) -> List[float]:
@@ -82,6 +89,21 @@ def _get_global_scale(plan: ConstructionPlan) -> List[float]:
 def _set_global_scale(plan: ConstructionPlan, scale: List[float]) -> None:
     md = dict(plan.metadata or {})
     md["global_scale"] = [round(v, 6) for v in scale]
+    plan.metadata = md
+
+
+def _get_validation_camera_offset(plan: ConstructionPlan) -> List[float]:
+    offset = (plan.metadata or {}).get("validation_camera_offset")
+    if offset and len(offset) >= 2:
+        return [float(offset[0]), float(offset[1])]
+    return [0.0, 0.0]
+
+
+def _set_validation_camera_offset(plan: ConstructionPlan,
+                                  offset: List[float]) -> None:
+    md = dict(plan.metadata or {})
+    md["validation_camera_offset"] = [round(float(offset[0]), 6),
+                                      round(float(offset[1]), 6)]
     plan.metadata = md
 
 
@@ -133,14 +155,16 @@ def _apply_candidate(plan: ConstructionPlan, name: str, diag: Dict[str, float],
     if name == "global_scale_x":
         scale = _get_global_scale(plan)
         new = min(_SCALE_BOUNDS[1], max(_SCALE_BOUNDS[0],
-                                        scale[0] * _bounded_step(diag["width_ratio"])))
+                                        scale[0] * _bounded_scale_step(
+                                            diag["width_ratio"])))
         record["global_scale_x"] = {"previous": scale[0], "new": round(new, 6)}
         scale[0] = new
         _set_global_scale(plan, scale)
     elif name == "global_scale_y":
         scale = _get_global_scale(plan)
         new = min(_SCALE_BOUNDS[1], max(_SCALE_BOUNDS[0],
-                                        scale[1] * _bounded_step(diag["height_ratio"])))
+                                        scale[1] * _bounded_scale_step(
+                                            diag["height_ratio"])))
         record["global_scale_y"] = {"previous": scale[1], "new": round(new, 6)}
         scale[1] = new
         _set_global_scale(plan, scale)
@@ -153,25 +177,25 @@ def _apply_candidate(plan: ConstructionPlan, name: str, diag: Dict[str, float],
         t[2] = new
         cam.translation = cam.translation.model_copy(update={"value": t})
     elif name == "camera_offset_x":
-        cam = _ensure_camera(plan, cfg)
-        t = list(cam.translation.value)
-        dist = max(abs(t[2]), 1e-6)
-        delta = diag["dx_px"] * dist / max(focal_px, 1e-6)
+        offset = _get_validation_camera_offset(plan)
+        # Auto-framing uses distance=focal/reference_width, therefore a
+        # world-space camera offset of dx/reference_width corrects dx pixels
+        # without replacing the inferred distance or base centering.
+        delta = diag["dx_px"] / max(diag.get("ref_width_px", focal_px), 1e-6)
         delta = max(-0.2, min(0.2, delta))
-        record["camera_offset_x"] = {"previous": t[0],
-                                     "new": round(t[0] + delta, 6)}
-        t[0] += delta
-        cam.translation = cam.translation.model_copy(update={"value": t})
+        record["camera_offset_x"] = {"previous": offset[0],
+                                     "new": round(offset[0] + delta, 6)}
+        offset[0] += delta
+        _set_validation_camera_offset(plan, offset)
     elif name == "camera_offset_y":
-        cam = _ensure_camera(plan, cfg)
-        t = list(cam.translation.value)
-        dist = max(abs(t[2]), 1e-6)
-        delta = -diag["dy_px"] * dist / max(focal_px, 1e-6)  # y up vs image down
+        offset = _get_validation_camera_offset(plan)
+        delta = -diag["dy_px"] / max(
+            diag.get("ref_width_px", focal_px), 1e-6)  # y up vs image down
         delta = max(-0.2, min(0.2, delta))
-        record["camera_offset_y"] = {"previous": t[1],
-                                     "new": round(t[1] + delta, 6)}
-        t[1] += delta
-        cam.translation = cam.translation.model_copy(update={"value": t})
+        record["camera_offset_y"] = {"previous": offset[1],
+                                     "new": round(offset[1] + delta, 6)}
+        offset[1] += delta
+        _set_validation_camera_offset(plan, offset)
     elif name == "revolve_radius_scale":
         ratio = _bounded_step(diag["width_ratio"])
         for part in plan.parts:
@@ -184,19 +208,29 @@ def _apply_candidate(plan: ConstructionPlan, name: str, diag: Dict[str, float],
     return record
 
 
-def _rank_candidates(diag: Dict[str, float]) -> List[Tuple[str, float]]:
+def _rank_candidates(diag: Dict[str, float],
+                     plan: Optional[ConstructionPlan] = None
+                     ) -> List[Tuple[str, float]]:
     """Order candidate adjustments by diagnosed mismatch magnitude."""
     canvas = diag.get("canvas_w", 1.0)
     scored = [
         ("global_scale_x", abs(math.log(max(diag["width_ratio"], 1e-6)))),
         ("global_scale_y", abs(math.log(max(diag["height_ratio"], 1e-6)))),
-        ("camera_offset_x", abs(diag["dx_px"]) / canvas),
-        ("camera_offset_y", abs(diag["dy_px"]) / canvas),
+        # A centroid displacement contaminates bounding-box scale diagnosis:
+        # correct alignment before spending the small render budget on size.
+        # Three times the normalized displacement makes a visible 1--2% shift
+        # competitive with the corresponding width/height mismatch.
+        ("camera_offset_x", 3.0 * abs(diag["dx_px"]) / canvas),
+        ("camera_offset_y", 3.0 * abs(diag["dy_px"]) / canvas),
         ("camera_distance",
          abs(math.log(max(diag["width_ratio"], 1e-6))) * 0.5),
         ("revolve_radius_scale",
          abs(math.log(max(diag["width_ratio"], 1e-6))) * 0.25),
     ]
+    if plan is not None and not any(
+            part.operator.value == "revolve" for part in plan.parts):
+        scored = [item for item in scored
+                  if item[0] != "revolve_radius_scale"]
     scored.sort(key=lambda kv: kv[1], reverse=True)
     return scored
 
@@ -388,7 +422,8 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
             break
 
         # pick the largest untried mismatch
-        candidates = [c for c, _ in _rank_candidates(diag) if c not in tried]
+        candidates = [c for c, _ in _rank_candidates(diag, best_plan)
+                      if c not in tried]
         if not candidates:
             stop_reason = "no_candidates_left"
             break
@@ -427,7 +462,7 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
             continue
 
         new_iou = cand_val.metrics.silhouette_iou or 0.0
-        kept = new_iou >= prev_iou and cand_manifest.success
+        kept = new_iou > prev_iou + 1e-9 and cand_manifest.success
         log.actions.append(RefinementAction(
             iteration=iterations,
             observed_problem=problem,
@@ -442,9 +477,11 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
             gain = new_iou - best_iou
             best_iou = new_iou
             _snapshot(project, snap_dir)
+            # A small gain from one coordinate does not imply that independent
+            # coordinates are exhausted.  Keep the bounded search moving; the
+            # tried set and hard iteration/render caps provide termination.
             if gain < rc.min_iou_gain:
-                stop_reason = "gain_below_minimum"
-                break
+                stop_reason = "small_gain_continuing_coordinate_search"
         # not kept: best_plan/best_manifest/best_val untouched (rollback)
 
     log.iterations = iterations

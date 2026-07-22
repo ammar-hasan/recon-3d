@@ -76,6 +76,19 @@ class RefinementConfig(BaseModel):
     max_renders: int = 12
 
 
+class MultiviewConfig(BaseModel):
+    enabled: bool = True
+    max_views: int = Field(default=8, ge=2, le=32)
+    max_part_match_cost: float = Field(default=0.85, gt=0.0, le=2.0)
+    min_pose_baseline_deg: float = Field(default=5.0, ge=0.0, le=180.0)
+
+
+class HypothesisConfig(BaseModel):
+    enabled: bool = True
+    acceptance_threshold: float = Field(default=0.55, ge=0.0, le=1.0)
+    max_confidence: float = Field(default=0.5, ge=0.0, le=0.5)
+
+
 class PipelineConfig(BaseModel):
     segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
     crop: CropConfig = Field(default_factory=CropConfig)
@@ -87,6 +100,8 @@ class PipelineConfig(BaseModel):
     depth: DepthConfig = Field(default_factory=DepthConfig)
     blender: BlenderConfig = Field(default_factory=BlenderConfig)
     refinement: RefinementConfig = Field(default_factory=RefinementConfig)
+    multiview: MultiviewConfig = Field(default_factory=MultiviewConfig)
+    hypotheses: HypothesisConfig = Field(default_factory=HypothesisConfig)
     seed: int = 1337
     keep_intermediates: bool = True
 

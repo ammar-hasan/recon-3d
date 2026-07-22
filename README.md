@@ -98,7 +98,7 @@ The first version focuses on manufactured and hard-surface objects with readable
 | Signs, logos, and reliefs | Objects with hidden internal structure |
 | Stylized props | Ambiguous scale or depth |
 
-Supported input guidance may include a text label, description, point, box, mask, or known physical dimension. Multiple images of the same object are part of the wider goal.
+Supported input guidance may include a text label, description, point, box, mask, or known physical dimension. Repeat `--image` to supply multiple views of the same object; secondary views are reconstructed independently and fused through source-labelled part matches, relative pose, and scale evidence.
 
 ## How it works
 
@@ -161,6 +161,12 @@ The untouched image is always preserved because its background may contain usefu
 
 Supported construction families include extrusion, revolution, sweep, primitive assembly, Boolean construction, lofting, freeform fitting, displacement, radial arrays, and mirror symmetry.
 
+### Multiview and hidden-geometry reasoning
+
+When a run contains more than one image, Recon3D processes every secondary view through segmentation, tracing, primitive fitting, semantic decomposition, depth, and camera estimation. It writes a shared-part graph, relative camera poses, scale consensus, and joint matching residuals to `geometry/multiview.json`. Secondary evidence annotates the primary graph; it never silently replaces primary observed geometry.
+
+Hidden-side completion remains explicitly hypothetical. Procedural cross-sections, rear-surface continuations, mirror completions, and occlusion completions are scored against operator, constraint, and multiview evidence. Every proposal is accepted or rejected in `geometry/hypotheses.json`, uses `source: generated_hypothesis`, and is capped at confidence 0.5.
+
 ### 4. Build, check, and improve
 
 | Stage | Purpose |
@@ -199,6 +205,9 @@ project/
 │   ├── sketch_graph.json
 │   ├── depth.png
 │   ├── normals.png
+│   ├── multiview.json
+│   ├── hypotheses.json
+│   ├── multiview/views/view_001/...
 │   └── construction_plan.yaml
 ├── blender/
 │   ├── build_model.py

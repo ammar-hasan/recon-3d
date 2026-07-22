@@ -371,6 +371,10 @@ def generate_render_script(plan: ConstructionPlan, ref_mask: np.ndarray,
         translation = list(framed_t)
     else:
         translation = [float(v) for v in translation]
+    camera_offset = (plan.metadata or {}).get("validation_camera_offset")
+    if camera_offset and len(camera_offset) >= 2:
+        translation[0] += float(camera_offset[0])
+        translation[1] += float(camera_offset[1])
     params = {
         "render_engine": cfg.blender.render_engine or "BLENDER_EEVEE",
         "resolution": int(ref_mask.shape[0]),

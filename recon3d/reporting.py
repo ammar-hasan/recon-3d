@@ -10,9 +10,9 @@ import json
 from pathlib import Path
 from typing import Optional
 
-from .schemas import (BlenderManifest, ConstructionPlan, RefinementLog,
-                      RunManifest, SchemaIO, SegmentationResult, SketchGraph,
-                      ValidationMetrics)
+from .schemas import (BlenderManifest, ConstructionPlan, HypothesisReport,
+                      MultiViewResult, RefinementLog, RunManifest, SchemaIO,
+                      SegmentationResult, SketchGraph, ValidationMetrics)
 
 
 def _yn(v: Optional[bool]) -> str:
@@ -99,6 +99,47 @@ def generate_report(project_dir: str | Path) -> str:
                 lines.append(f"    - inferred `{key}`: {ev.source.value} "
                              f"(conf {ev.confidence:.2f})")
         lines.append("")
+
+    # --- multiview + generated hypotheses -------------------------------
+    mv_path = pdir / "geometry" / "multiview.json"
+    if mv_path.exists():
+        try:
+            mv = SchemaIO.load_json(MultiViewResult, mv_path)
+            lines += ["## Multiview Fusion", ""]
+            if mv.enabled:
+                good = sum(o.status == "success" for o in mv.observations)
+                lines += [
+                    f"- source views: {len(mv.observations) + 1}",
+                    f"- successful secondary views: {good}",
+                    f"- cross-view part matches: {len(mv.matches)}",
+                    f"- primary observed geometry overwritten: "
+                    f"{_yn(bool(mv.joint_optimization.get('primary_geometry_overwritten')))}",
+                ]
+            else:
+                lines.append("- single-view run; multiview fusion not activated")
+            lines.append("")
+        except Exception:
+            pass
+
+    hyp_path = pdir / "geometry" / "hypotheses.json"
+    if hyp_path.exists():
+        try:
+            hypotheses = SchemaIO.load_json(HypothesisReport, hyp_path)
+            lines += [
+                "## Generated Hypotheses", "",
+                f"- candidates: {len(hypotheses.candidates)}",
+                f"- accepted: {len(hypotheses.accepted_ids)}",
+                f"- rejected: {len(hypotheses.rejected_ids)}",
+            ]
+            for candidate in hypotheses.candidates:
+                state = "accepted" if candidate.accepted else "rejected"
+                lines.append(
+                    f"  - `{candidate.id}` {candidate.hypothesis_type}: {state} "
+                    f"(score {candidate.score:.2f}, conf {candidate.confidence:.2f}, "
+                    f"source={candidate.source.value})")
+            lines.append("")
+        except Exception:
+            pass
 
     # --- construction plan ------------------------------------------------
     plan: Optional[ConstructionPlan] = None

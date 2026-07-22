@@ -556,6 +556,49 @@ class TestSemanticParts:
         assert "bottle_body" in classes
         assert "inner_panel" not in classes
 
+    def test_gear_label_keeps_toothed_outer_silhouette_as_root(self):
+        paths = [
+            make_path(rect_pts((0.5, 0.5), 0.62, 0.48, 8.0), True,
+                      "gear_outer"),
+            make_path(ellipse_pts((0.5, 0.48), 0.12, 0.07, 8.0), True,
+                      "bore", layer=TraceLayerName.COLOR_REGIONS),
+            make_path(ellipse_pts((0.5, 0.48), 0.05, 0.03, 8.0), True,
+                      "bore_detail", layer=TraceLayerName.COLOR_REGIONS),
+        ]
+        prims = fit_primitives([
+            make_layer([paths[0]]),
+            make_layer(paths[1:], TraceLayerName.COLOR_REGIONS),
+        ], CFG)
+        graph = SketchGraph(primitives=prims, constraints=[])
+        out = decompose_parts(
+            graph, "", InputSpec(image_paths=["synthetic.png"],
+                                  target_label="gear"), CFG)
+        assert out.parts[0].part_class == "gear_body"
+        assert out.parts[0].primitive_ids[0].startswith("silhouette_")
+        assert "inner_panel" not in {p.part_class for p in out.parts}
+
+    def test_crate_silhouette_holes_become_cutouts_not_outer_retrace(self):
+        silhouette = [
+            make_path(rect_pts((0.5, 0.5), 0.60, 0.60, 0.0), True,
+                      "outer_retrace"),
+            make_path(rect_pts((0.5, 0.42), 0.28, 0.08, 0.0), True,
+                      "slat_gap", is_hole=True),
+        ]
+        structural = make_path(
+            rect_pts((0.5, 0.5), 0.61, 0.61, 0.0), True,
+            "outer_structural", layer=TraceLayerName.STRUCTURAL_EDGES)
+        prims = fit_primitives([
+            make_layer(silhouette),
+            make_layer([structural], TraceLayerName.STRUCTURAL_EDGES),
+        ], CFG)
+        out = decompose_parts(
+            SketchGraph(primitives=prims, constraints=[]), "",
+            InputSpec(image_paths=["synthetic.png"], target_label="crate"), CFG)
+        cutouts = [p for p in out.parts if p.part_class == "cutout"]
+        assert len(cutouts) == 1
+        prim_by_id = {p.id: p for p in out.primitives}
+        assert prim_by_id[cutouts[0].primitive_ids[0]].source_path == "slat_gap"
+
     def test_deterministic_ids(self, tmp_path):
         def run():
             graph = build_sketch_graph(wheel_primitives(),

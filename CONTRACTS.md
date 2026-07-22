@@ -17,7 +17,8 @@ project/
 ├── input/original.png
 ├── segmentation/{object_mask.png, object_rgba.png, crop_metadata.json}
 ├── traces/{silhouette.svg, color_regions.svg, structural_edges.svg, details.svg}
-├── geometry/{fitted_primitives.json, sketch_graph.json, depth.png, normals.png, construction_plan.yaml}
+├── geometry/{fitted_primitives.json, sketch_graph.json, depth.png, normals.png, multiview.json, hypotheses.json, construction_plan.yaml}
+├── geometry/multiview/views/view_NNN/{segmentation, traces, geometry}
 ├── blender/{build_model.py, scene.blend, model.glb}
 ├── validation/{reference_overlay.png, silhouette_comparison.png, depth_comparison.png, turntable.mp4, metrics.json}
 ├── manifest.json
@@ -97,10 +98,29 @@ def estimate_depth(crop_rgba_path: str, crop_mask_path: str,
     # Optional backends; shading/shape-from-silhouette fallback. Writes
     # depth.png + normals.png when enabled. Kept separate from vector evidence.
 
+# multiview.py  (Phase 6 support)
+def fuse_multiview(bundle: InputBundle, primary_graph: SketchGraph,
+                   primary_camera: CameraEstimate, primary_depth: DepthEvidence,
+                   primary_seg: SegmentationResult, spec: InputSpec,
+                   cfg: PipelineConfig, out_dir: str
+                   ) -> tuple[SketchGraph, DepthEvidence, MultiViewResult]
+    # Independently reconstructs secondary views; matches semantic parts;
+    # solves relative object-camera pose and robust scale consensus; records
+    # joint residuals. Fuses only source-labelled support metadata and never
+    # overwrites primary observed primitives.
+
 # operators.py  (Stage 13)
 def classify_operators(graph: SketchGraph, depth: DepthEvidence,
                        cfg: PipelineConfig) -> SketchGraph
     # Fills construction_candidates + selected_operator per part.
+
+# hypotheses.py  (Phase 7 support)
+def evaluate_hypotheses(graph: SketchGraph, multiview: MultiViewResult | None,
+                        cfg: PipelineConfig
+                        ) -> tuple[SketchGraph, HypothesisReport]
+    # Proposes hidden-side/cross-section/mirror/occlusion completions, scores
+    # and accepts/rejects each one, caps confidence at 0.5, and annotates only
+    # inferred_geometry with source=generated_hypothesis.
 
 # construction_plan.py  (Stage 14)
 def build_plan(graph: SketchGraph, camera: CameraEstimate, depth: DepthEvidence,

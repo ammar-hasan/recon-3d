@@ -3,5 +3,6 @@ __pycache__/
 *.pyc
 projects/
 evals/benchmark/dataset/
+evals/results*/
 *.egg-info/
 .DS_Store

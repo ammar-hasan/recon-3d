@@ -220,6 +220,90 @@ def test_radial_symmetry_on_rings_does_not_beat_revolve():
     assert selected["spokes"] == OperatorCategory.RADIAL_ARRAY.value
 
 
+def test_gear_body_extrudes_and_duplicate_tooth_trace_is_surface_detail():
+    body = _rect_region("gear_outline", 0.2, 0.25, 0.8, 0.75)
+    tooth = _rect_region("tooth_trace", 0.75, 0.44, 0.84, 0.56)
+    parts = [
+        _part("gear", "gear_body", [body.id]),
+        SemanticPart(id="tooth", part_class="tooth",
+                     primitive_ids=[tooth.id], parent_id="gear"),
+    ]
+    graph = operators_mod.classify_operators(
+        SketchGraph(primitives=[body, tooth], parts=parts), NO_DEPTH, CFG)
+    selected = {p.id: p.selected_operator for p in graph.parts}
+    assert selected["gear"] == OperatorCategory.EXTRUDE.value
+    assert selected["tooth"] == OperatorCategory.DISPLACEMENT.value
+
+
+def test_crate_guided_roles_do_not_duplicate_root_silhouette():
+    body = _rect_region("crate_outline", 0.2, 0.2, 0.8, 0.8)
+    post = _rect_region("post_trace", 0.2, 0.2, 0.3, 0.8)
+    slat = _rect_region("slat_trace", 0.3, 0.3, 0.8, 0.4)
+    parts = [
+        _part("crate", "bottom_panel", [body.id]),
+        SemanticPart(id="post", part_class="corner_post",
+                     primitive_ids=[post.id], parent_id="crate"),
+        SemanticPart(id="slat", part_class="side_slat",
+                     primitive_ids=[slat.id], parent_id="crate"),
+    ]
+    graph = operators_mod.classify_operators(
+        SketchGraph(primitives=[body, post, slat], parts=parts), NO_DEPTH, CFG)
+    selected = {p.id: p.selected_operator for p in graph.parts}
+    assert selected["crate"] == OperatorCategory.EXTRUDE.value
+    assert selected["post"] == OperatorCategory.DISPLACEMENT.value
+    assert selected["slat"] == OperatorCategory.DISPLACEMENT.value
+
+
+def test_sweep_plan_uses_medial_axis_as_path_and_observed_width():
+    outline = GeometricPrimitive(
+        id="pipe_outline",
+        type=PrimitiveType.CLOSED_REGION,
+        params={"points": [
+            [0.20, 0.65], [0.30, 0.75], [0.55, 0.55], [0.70, 0.30],
+            [0.62, 0.22], [0.47, 0.47], [0.25, 0.58],
+        ]},
+        fallback_points=[
+            (0.20, 0.65), (0.30, 0.75), (0.55, 0.55), (0.70, 0.30),
+            (0.62, 0.22), (0.47, 0.47), (0.25, 0.58),
+        ],
+        source_path="pipe_silhouette",
+        source_layer=TraceLayerName.SILHOUETTE,
+        confidence=0.9,
+    )
+    graph = SketchGraph(
+        primitives=[outline], parts=[_part("pipe", "pipe", [outline.id])])
+    graph = operators_mod.classify_operators(graph, NO_DEPTH, CFG)
+    plan = plan_mod.build_plan(
+        graph, CameraEstimate(), NO_DEPTH,
+        make_spec(target_label="pipe", output_dir="/nonexistent-dir"), CFG)
+    sweep = plan.parts[0]
+    assert sweep.operator == OperatorCategory.SWEEP
+    assert sweep.profile["type"] == "polyline"
+    assert sweep.profile["closed"] is False
+    assert len(sweep.profile["points"]) >= 3
+    assert 0.006 <= sweep.depth <= 0.15
+
+
+def test_boolean_target_ignores_non_geometric_details_part():
+    body = _rect_region("body", 0.2, 0.2, 0.8, 0.8)
+    hole = _circle("hole", 0.5, 0.5, 0.08)
+    detail = _rect_region("detail", 0.1, 0.1, 0.9, 0.9)
+    parts = [
+        _part("body_part", "plate", [body.id]),
+        SemanticPart(id="hole_part", part_class="center_bore",
+                     primitive_ids=[hole.id], parent_id="body_part"),
+        _part("detail_part", "details", [detail.id]),
+    ]
+    graph = operators_mod.classify_operators(
+        SketchGraph(primitives=[body, hole, detail], parts=parts), NO_DEPTH, CFG)
+    plan = plan_mod.build_plan(
+        graph, CameraEstimate(), NO_DEPTH,
+        make_spec(output_dir="/nonexistent-dir"), CFG)
+    bore = next(p for p in plan.parts if p.id == "hole_part")
+    assert bore.operator == OperatorCategory.BOOLEAN
+    assert bore.boolean_target == "body_part"
+
+
 def test_repetition_count_two_is_not_an_array():
     """rotational repetition needs count >= 3 to justify radial_array."""
     prims = [
@@ -261,6 +345,14 @@ def test_camera_ignores_incidental_ellipses_for_labelled_bottle():
     est = camera_mod.estimate_camera(
         make_wheel_graph(), make_seg(), make_crop_meta(),
         make_spec(target_label="bottle"), CFG)
+    assert est.object_rotation_euler_deg.value == [0.0, 0.0, 0.0]
+    assert est.object_rotation_euler_deg.source == EvidenceSource.SEMANTIC_PRIOR
+
+
+def test_camera_does_not_rotate_observed_gear_silhouette_twice():
+    est = camera_mod.estimate_camera(
+        make_wheel_graph(), make_seg(), make_crop_meta(),
+        make_spec(target_label="gear"), CFG)
     assert est.object_rotation_euler_deg.value == [0.0, 0.0, 0.0]
     assert est.object_rotation_euler_deg.source == EvidenceSource.SEMANTIC_PRIOR
 

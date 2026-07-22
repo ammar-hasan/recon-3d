@@ -127,6 +127,39 @@ def test_load_png_jpeg_webp(tmp_path):
     assert files["e.png"].channels == 1
 
 
+def test_rembg_undersegmentation_rescue_accepts_containing_subject(monkeypatch):
+    rgb = np.full((100, 100, 3), 245, np.uint8)
+    seed = np.zeros((100, 100), np.uint8)
+    seed[45:55, 45:55] = 1
+    enclosing = np.zeros_like(seed)
+    enclosing[40:60, 32:67] = 1
+
+    monkeypatch.setattr(segmentation, "_grabcut",
+                        lambda *args, **kwargs: enclosing.copy())
+    monkeypatch.setattr(
+        segmentation, "_expand_edge_bounded_enclosure",
+        lambda image, mask: (mask, {"accepted": False}),
+    )
+    recovered, diagnostics = segmentation._rescue_undersegmented_rembg(
+        rgb, seed, PipelineConfig())
+    assert diagnostics["accepted"] is True
+    assert np.array_equal(recovered, enclosing)
+
+
+def test_rembg_undersegmentation_rescue_rejects_unrelated_component(monkeypatch):
+    rgb = np.full((100, 100, 3), 245, np.uint8)
+    seed = np.zeros((100, 100), np.uint8)
+    seed[10:20, 10:20] = 1
+    unrelated = np.zeros_like(seed)
+    unrelated[30:80, 30:70] = 1
+    monkeypatch.setattr(segmentation, "_grabcut",
+                        lambda *args, **kwargs: unrelated.copy())
+    recovered, diagnostics = segmentation._rescue_undersegmented_rembg(
+        rgb, seed, PipelineConfig())
+    assert diagnostics["accepted"] is False
+    assert np.array_equal(recovered, seed)
+
+
 def test_exif_orientation_applied(tmp_path):
     img = Image.new("RGB", (40, 20), (10, 20, 30))
     img.putpixel((0, 0), (255, 0, 0))

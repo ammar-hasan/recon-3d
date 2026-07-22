@@ -251,7 +251,11 @@ def estimate_camera(
 
     features = _circular_features(graph)
     label = (spec.target_label or "").lower()
-    face_circle_labels = ("wheel", "gear", "knob", "pulley", "flange")
+    # Gear reconstruction owns the already-foreshortened observed outer
+    # silhouette as an extrusion profile.  Rotating that profile again from
+    # incidental inner ellipses double-applies pose (and their tooth-edge
+    # highlights make the in-plane angle especially unstable).
+    face_circle_labels = ("wheel", "knob", "pulley", "flange")
     if label and not any(k in label for k in face_circle_labels):
         object_rotation = EvidencedValue(
             value=[0.0, 0.0, 0.0],

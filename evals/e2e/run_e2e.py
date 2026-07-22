@@ -801,6 +801,55 @@ def score_visual(project_dir: Path) -> Dict[str, Any]:
     return out
 
 
+def score_multiview(project_dir: Path) -> Dict[str, Any]:
+    """Score Phase-6 evidence when a project actually supplied >1 view."""
+    data = _read_json(project_dir / "geometry" / "multiview.json")
+    if not data or not data.get("enabled"):
+        return {"available": False, "source_views": 1}
+    observations = data.get("observations") or []
+    matches = data.get("matches") or []
+    successful = [o for o in observations if o.get("status") == "success"]
+    pose_count = len(data.get("relative_camera_poses") or {})
+    match_conf = [float(m.get("confidence", 0.0)) for m in matches]
+    view_success = len(successful) / max(len(observations), 1)
+    pose_coverage = pose_count / max(len(successful), 1)
+    confidence = float(np.mean(match_conf)) if match_conf else 0.0
+    score = 0.35 * view_success + 0.25 * min(1.0, pose_coverage) + 0.40 * confidence
+    joint = data.get("joint_optimization") or {}
+    return {
+        "available": True,
+        "source_views": len(observations) + 1,
+        "successful_secondary_views": len(successful),
+        "cross_view_matches": len(matches),
+        "mean_match_confidence": confidence,
+        "relative_pose_coverage": pose_coverage,
+        "joint_optimization": joint,
+        "primary_geometry_overwritten": joint.get("primary_geometry_overwritten"),
+        "score": score,
+    }
+
+
+def score_hypotheses(project_dir: Path) -> Dict[str, Any]:
+    data = _read_json(project_dir / "geometry" / "hypotheses.json")
+    if data is None:
+        return {"available": False}
+    candidates = data.get("candidates") or []
+    labelled = all(c.get("source") == "generated_hypothesis" for c in candidates)
+    bounded = all(float(c.get("confidence", 1.0)) <= 0.5 for c in candidates)
+    audited = all(bool(c.get("accepted")) or bool(c.get("rejection_reasons"))
+                  for c in candidates)
+    return {
+        "available": True,
+        "candidate_count": len(candidates),
+        "accepted_count": len(data.get("accepted_ids") or []),
+        "rejected_count": len(data.get("rejected_ids") or []),
+        "all_sources_labelled": labelled,
+        "confidence_bounded": bounded,
+        "acceptance_or_rejection_audited": audited,
+        "score": float(labelled and bounded and audited),
+    }
+
+
 # ---------------------------------------------------------------------------
 # baselines + ablations
 # ---------------------------------------------------------------------------
@@ -886,6 +935,8 @@ def build_report(case: Dict[str, Any], project_dir: Path,
     camera = score_camera(project_dir, case["camera"])
     blend = score_blender(project_dir, blender)
     visual = score_visual(project_dir)
+    multiview = score_multiview(project_dir)
+    hypotheses = score_hypotheses(project_dir)
 
     reopen = blend.get("reopen") or {}
     editability_score = None
@@ -939,7 +990,8 @@ def build_report(case: Dict[str, Any], project_dir: Path,
         "editability": editability_score,
         "silhouette": visual.get("silhouette_iou_final"),
         "internal_features": visual.get("part_mask_iou"),
-        "multiview_geometry": None,
+        "multiview_geometry": (multiview.get("score")
+                               if multiview.get("available") else None),
         "materials": visual.get("perceptual_similarity"),
         "uncertainty": (1.0 if parts.get("uncertainty") else None),
     }
@@ -963,7 +1015,7 @@ def build_report(case: Dict[str, Any], project_dir: Path,
         "input": {
             "difficulty": meta.get("difficulty", "unknown"),
             "tags": meta.get("tags", []),
-            "source_views": 1,
+            "source_views": multiview.get("source_views", 1),
             "known_scale": False,
         },
         "stage_results": {
@@ -978,6 +1030,8 @@ def build_report(case: Dict[str, Any], project_dir: Path,
             "blender": {k: v for k, v in blend.items() if k != "reopen"},
             "blender_reopen": reopen or None,
             "visual": visual,
+            "multiview": multiview,
+            "hypotheses": hypotheses,
         },
         "uncertainty": parts.get("uncertainty", {}),
         "group_scores": group_scores,

@@ -15,6 +15,9 @@ import math
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+import cv2
+import numpy as np
+
 from . import materials as materials_mod
 from .config import PipelineConfig
 from .part_geometry import (
@@ -157,6 +160,12 @@ class _PlanBuilder:
             key=lambda p: (lambda b: (b[2] - b[0]) * (b[3] - b[1]))(primitive_bbox(p)),
         )
         pts = outline_of(prim)
+        if ((part.part_class or "").lower() == "cutout"
+                and len(prim.fallback_points) >= 3):
+            # A traced silhouette hole remains a closed observed contour even
+            # when primitive fitting approximates it as an arc.  Boolean
+            # cutters must use that exact contour, not a promoted full circle.
+            pts = [(float(x), float(y)) for x, y in prim.fallback_points]
         # Some fitted open/symmetric primitives store a two-point parametric
         # summary while retaining the observed contour in fallback_points.
         # Closed construction operators need that contour, not the summary.
@@ -472,13 +481,124 @@ class _PlanBuilder:
         return pp
 
     def build_sweep(self, part: SemanticPart, conf: float) -> PlanPart:
-        notes: List[str] = ["sweep radius is a generated hypothesis"]
+        notes: List[str] = []
         prims = part_primitives(self.graph, part)
-        prim = prims[0] if prims else None
+        prim = max(
+            prims,
+            key=lambda p: (lambda b: (b[2] - b[0]) * (b[3] - b[1]))(
+                primitive_bbox(p)),
+            default=None,
+        )
         pts = outline_of(prim) if prim is not None else []
-        if len(pts) >= 2:
-            p0 = self.frame.point(*pts[0])
-            p1 = self.frame.point(*pts[-1])
+        path_uv: List[Tuple[float, float]] = []
+        radius = 0.02
+
+        if prim is not None and len(pts) >= 3 and prim.type in CLOSED_FLAT:
+            # The observed region is the projected tube envelope.  Its medial
+            # axis is the sweep path, while the distance transform along that
+            # axis estimates the projected half-width.  This keeps path and
+            # cross-section separate (the old implementation accidentally
+            # sent a small circle to Blender as the path).
+            from skimage.morphology import skeletonize
+
+            resolution = 384
+            mask = np.zeros((resolution, resolution), dtype=np.uint8)
+            poly = np.asarray([
+                [int(round(u * (resolution - 1))),
+                 int(round(v * (resolution - 1)))]
+                for u, v in pts
+            ], dtype=np.int32)
+            cv2.fillPoly(mask, [poly.reshape(-1, 1, 2)], 255)
+            skeleton = skeletonize(mask > 0).astype(np.uint8)
+
+            # Work only on the largest skeleton component; minor islands can
+            # arise at one-pixel contour defects and are not a second pipe.
+            nlab, labels, stats, _ = cv2.connectedComponentsWithStats(
+                skeleton, connectivity=8)
+            if nlab > 1:
+                lab = int(np.argmax(stats[1:, cv2.CC_STAT_AREA])) + 1
+                skeleton = (labels == lab).astype(np.uint8)
+            coords = [tuple(map(int, q)) for q in np.argwhere(skeleton > 0)]
+            nodes = set(coords)
+            neighbours: Dict[Tuple[int, int], List[Tuple[int, int]]] = {}
+            for y, x in coords:
+                neighbours[(y, x)] = [
+                    (y + dy, x + dx)
+                    for dy in (-1, 0, 1)
+                    for dx in (-1, 0, 1)
+                    if (dy or dx) and (y + dy, x + dx) in nodes
+                ]
+
+            def farthest(start, endpoint_only=False):
+                queue = [start]
+                previous = {start: None}
+                distance = {start: 0}
+                for cur in queue:
+                    for nxt in neighbours.get(cur, []):
+                        if nxt in previous:
+                            continue
+                        previous[nxt] = cur
+                        distance[nxt] = distance[cur] + 1
+                        queue.append(nxt)
+                candidates = [q for q in distance
+                              if not endpoint_only or len(neighbours.get(q, [])) <= 1]
+                return max(candidates or list(distance), key=lambda q: distance[q]), previous
+
+            endpoints = [q for q in coords if len(neighbours.get(q, [])) <= 1]
+            if coords:
+                first = endpoints[0] if endpoints else coords[0]
+                end_a, _ = farthest(first, endpoint_only=bool(endpoints))
+                end_b, previous = farthest(end_a, endpoint_only=bool(endpoints))
+                pixel_path = []
+                cur = end_b
+                while cur is not None:
+                    pixel_path.append(cur)
+                    cur = previous[cur]
+                pixel_path.reverse()
+
+                if len(pixel_path) >= 2:
+                    arr = np.asarray([[x, y] for y, x in pixel_path], np.float32)
+                    simplified = cv2.approxPolyDP(
+                        arr.reshape(-1, 1, 2), 1.25, False).reshape(-1, 2)
+                    path_uv = [
+                        (float(x) / (resolution - 1),
+                         float(y) / (resolution - 1))
+                        for x, y in simplified
+                    ]
+                    dist = cv2.distanceTransform(mask, cv2.DIST_L2, 5)
+                    trim = max(1, len(pixel_path) // 10)
+                    core = pixel_path[trim:-trim] if len(pixel_path) > 2 * trim else pixel_path
+                    widths = [float(dist[y, x]) for y, x in core if dist[y, x] > 0]
+                    if widths:
+                        radius_norm = float(np.percentile(widths, 40.0)) / (resolution - 1)
+                        radius = min(
+                            0.15,
+                            # The medial axis is extracted from a perspective
+                            # silhouette; a small compensation covers the
+                            # antialiased outer envelope lost during
+                            # skeletonisation and curve smoothing.
+                            max(0.006, 1.10 * self.frame.length(radius_norm)),
+                        )
+                    notes.append(
+                        "sweep centerline and radius estimated from the observed silhouette medial axis"
+                    )
+
+        if not path_uv and len(pts) >= 2:
+            path_uv = [(float(u), float(v)) for u, v in pts]
+            if prim is not None and prim.type in CLOSED_FLAT:
+                bx = primitive_bbox(prim)
+                radius = max(
+                    0.006,
+                    min(0.08, 0.08 * self.frame.length(min(bx[2] - bx[0], bx[3] - bx[1]))),
+                )
+                notes.append("silhouette medial axis unavailable; conservative sweep radius used")
+            else:
+                notes.append("sweep path follows an observed open curve; radius is a generated hypothesis")
+
+        path = [self.frame.point(u, v) for u, v in path_uv]
+        if len(path) >= 2:
+            p0 = path[0]
+            p1 = path[-1]
             dx, dy = p1[0] - p0[0], p1[1] - p0[1]
             norm = math.hypot(dx, dy) or 1.0
             direction = [dx / norm, dy / norm, 0.0]
@@ -486,15 +606,14 @@ class _PlanBuilder:
         else:
             direction = [1.0, 0.0, 0.0]
             origin = [0.0, 0.0, 0.0]
-        radius = 0.02
-        circle = [
-            [round(radius * math.cos(2 * math.pi * i / 12), 6),
-             round(radius * math.sin(2 * math.pi * i / 12), 6)]
-            for i in range(12)
-        ]
         pp = self.base_part(part, OperatorCategory.SWEEP, conf, notes)
         pp.axis = {"origin": origin, "direction": [round(d, 6) for d in direction]}
-        pp.profile = {"type": "circle", "points": circle, "closed": True}
+        pp.profile = {
+            "type": "polyline",
+            "points": [[round(x, 6), round(y, 6)] for x, y in path],
+            "closed": False,
+        }
+        pp.depth = round(radius, 6)
         if prim is not None:
             pp.source_curve = prim.id
         return pp
@@ -744,7 +863,11 @@ class _PlanBuilder:
         for other in self.graph.parts:
             if other.id == part.id:
                 continue
-            if other.selected_operator == OperatorCategory.BOOLEAN.value:
+            if other.selected_operator in {
+                OperatorCategory.BOOLEAN.value,
+                OperatorCategory.DISPLACEMENT.value,
+                OperatorCategory.TEXTURE_ONLY.value,
+            }:
                 continue
             bx = part_bbox(self.graph, other)
             if bx[0] <= my_cx <= bx[2] and bx[1] <= my_cy <= bx[3]:

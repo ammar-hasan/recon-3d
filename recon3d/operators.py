@@ -34,12 +34,13 @@ from .schemas import (
 
 _REVOLVE_CLASSES = (
     "tyre", "tire", "rim", "hub", "wheel", "bottle", "bowl", "knob",
-    "vase", "gear", "shade", "flange", "pulley", "cap", "barrel",
+    "vase", "shade", "pulley", "cap", "barrel",
     "disk", "disc",
 )
 _EXTRUDE_CLASSES = (
     "plate", "bracket", "logo", "sign", "panel", "base", "lid", "seat",
-    "backrest", "leg", "post", "slat", "tooth", "plaque",
+    "backrest", "leg", "post", "slat", "tooth", "plaque", "gear",
+    "flange",
 )
 _SWEEP_CLASSES = ("handle", "pipe", "arm", "rail", "cable", "tube", "hose")
 _BOOLEAN_CLASSES = (
@@ -249,7 +250,27 @@ def classify_operators(graph: SketchGraph, depth: DepthEvidence, cfg: PipelineCo
                 add(OperatorCategory.LOFT, 0.55)
 
         # --- displacement / texture-only: small surface detail ---
-        if any(k in cls for k in _DETAIL_CLASSES):
+        parent = next((p for p in g.parts if p.id == part.parent_id), None)
+        gear_tooth_already_in_outline = (
+            "tooth" in cls
+            and parent is not None
+            and "gear" in (parent.part_class or "").lower()
+        )
+        crate_role_already_in_outline = (
+            cls in {"corner_post", "side_slat"}
+            and parent is not None
+            and "bottom_panel" in (parent.part_class or "").lower()
+        )
+        if gear_tooth_already_in_outline or crate_role_already_in_outline:
+            # The gear root owns the directly observed toothed silhouette.
+            # A guided tooth representative is semantic evidence, not an
+            # additional solid (which would duplicate one trace fragment and
+            # can create a large spur outside the gear body).
+            add(OperatorCategory.DISPLACEMENT, 0.95)
+            part.notes.append(
+                "semantic role geometry is already encoded by the observed root silhouette"
+            )
+        elif any(k in cls for k in _DETAIL_CLASSES):
             # Aggregated residual traces are explicitly non-structural. They
             # must not become a noisy array/boolean merely because one member
             # touches a broad constraint.

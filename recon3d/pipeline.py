@@ -26,7 +26,7 @@ def _ensure_dirs(project_dir: Path) -> None:
 
 def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
     from . import (blender_codegen, camera, constraints, construction_plan, crop,
-                   depth, input_manager, operators, preprocess, primitives,
+                   depth, hypotheses, input_manager, multiview, operators, preprocess, primitives,
                    refinement, runner, segmentation, semantic_parts, sketch_graph,
                    svg_cleanup, validation, vectorize)
 
@@ -70,7 +70,22 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         cam = camera.estimate_camera(graph, seg, crop_meta, spec, cfg)
         dep = depth.estimate_depth(crop_rgba, crop_mask, graph,
                                    str(project_dir / "geometry"), cfg)
+
+        # Phase 6: independent secondary-view reconstruction followed by
+        # source-labelled shared-part, relative-pose, and scale fusion.
+        graph, dep, mv_result = multiview.fuse_multiview(
+            bundle, graph, cam, dep, seg, spec, cfg,
+            str(project_dir / "geometry" / "multiview"))
+        SchemaIO.save_json(mv_result, project_dir / "geometry" / "multiview.json")
+
         graph = operators.classify_operators(graph, dep, cfg)
+
+        # Phase 7: optional hidden-geometry proposals are explicitly scored,
+        # accepted/rejected, and kept separate from observed primitives.
+        graph, hypothesis_report = hypotheses.evaluate_hypotheses(
+            graph, mv_result, cfg)
+        SchemaIO.save_json(
+            hypothesis_report, project_dir / "geometry" / "hypotheses.json")
         SchemaIO.save_json(graph, project_dir / "geometry" / "sketch_graph.json")
         plan = construction_plan.build_plan(graph, cam, dep, spec, cfg)
         errors = construction_plan.validate_plan(plan)

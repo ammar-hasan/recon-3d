@@ -14,6 +14,7 @@ from evals.e2e.run_e2e import (_case_label, _labels_match, major_part_recall,
                                rasterize_cleaned_paths,
                                rasterize_svg_silhouette, safety_scan,
                                score_blender, score_camera,
+                               score_hypotheses, score_multiview,
                                score_vectorization)
 from evals import metrics as m
 
@@ -160,6 +161,41 @@ class TestCaseLabel:
 
     def test_falls_back_to_case_id(self):
         assert _case_label({"case_id": "gear_02", "parts": {}}) == "gear"
+
+
+class TestPhaseSixSevenScoring:
+    def test_multiview_artifact_scores_only_when_enabled(self, tmp_path):
+        geom = tmp_path / "geometry"
+        geom.mkdir()
+        (geom / "multiview.json").write_text(json.dumps({
+            "enabled": True,
+            "observations": [{"view_id": "view_001", "status": "success"}],
+            "matches": [{"confidence": 0.8}],
+            "relative_camera_poses": {"view_001": {"value": [10, 0, 0]}},
+            "joint_optimization": {"primary_geometry_overwritten": False},
+        }))
+        result = score_multiview(tmp_path)
+        assert result["available"] is True
+        assert result["source_views"] == 2
+        assert result["score"] > 0.8
+        assert result["primary_geometry_overwritten"] is False
+
+    def test_hypothesis_source_and_rejection_audit(self, tmp_path):
+        geom = tmp_path / "geometry"
+        geom.mkdir()
+        (geom / "hypotheses.json").write_text(json.dumps({
+            "accepted_ids": ["h1"], "rejected_ids": ["h2"],
+            "candidates": [
+                {"id": "h1", "source": "generated_hypothesis",
+                 "confidence": 0.4, "accepted": True, "rejection_reasons": []},
+                {"id": "h2", "source": "generated_hypothesis",
+                 "confidence": 0.2, "accepted": False,
+                 "rejection_reasons": ["insufficient evidence"]},
+            ],
+        }))
+        result = score_hypotheses(tmp_path)
+        assert result["score"] == 1.0
+        assert result["accepted_count"] == result["rejected_count"] == 1
 
 
 class TestSvgRasterize:

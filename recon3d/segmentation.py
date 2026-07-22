@@ -170,6 +170,175 @@ def _classical_mask(rgb: np.ndarray, cfg: PipelineConfig) -> np.ndarray:
                     rect=(mx, my, w - mx, h - my))
 
 
+def _rescue_undersegmented_rembg(
+    rgb: np.ndarray, mask: np.ndarray, cfg: PipelineConfig
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Recover a pale enclosing object when rembg selects only its emblem.
+
+    A larger centre-rectangle GrabCut candidate is accepted only when the
+    rembg component is small, is almost fully contained by the candidate,
+    and the candidate has a plausible non-border extent.  The containment
+    requirement prevents this fallback from replacing legitimate small
+    isolated subjects.
+    """
+    h, w = mask.shape
+    seed = _select_target(mask.astype(np.uint8), None, None)
+    seed_cov = float(seed.mean())
+    info: Dict[str, Any] = {
+        "attempted": False,
+        "accepted": False,
+        "seed_coverage": seed_cov,
+    }
+    if not (cfg.segmentation.min_coverage < seed_cov < 0.07):
+        return mask, info
+
+    info["attempted"] = True
+    # Keep the initial rectangle close to the canvas edge.  Pale products can
+    # have boundaries well outside the conventional 10% centre rectangle;
+    # GrabCut then treats the actual object as definite background.
+    margin_x, margin_y = int(w * 0.02), int(h * 0.02)
+    far_x, far_y = int(w * 0.98), int(h * 0.98)
+    try:
+        candidate = _grabcut(
+            rgb,
+            min(5, cfg.segmentation.grabcut_iterations),
+            rect=(margin_x, margin_y, far_x, far_y),
+        )
+    except cv2.error:
+        return mask, info
+    candidate = _select_target(candidate, None, None)
+    candidate_cov = float(candidate.mean())
+    containment = float((candidate & seed).sum()) / max(float(seed.sum()), 1.0)
+    info.update({
+        "candidate_coverage": candidate_cov,
+        "seed_containment": containment,
+    })
+    if candidate.any():
+        ys, xs = np.nonzero(candidate)
+        bw = (int(xs.max()) - int(xs.min()) + 1) / float(w)
+        bh = (int(ys.max()) - int(ys.min()) + 1) / float(h)
+        touches = (xs.min() == 0 or ys.min() == 0
+                   or xs.max() == w - 1 or ys.max() == h - 1)
+    else:
+        bw = bh = 0.0
+        touches = True
+    plausible = (
+        candidate_cov >= max(0.07, 2.0 * seed_cov)
+        and candidate_cov <= min(0.55, 7.0 * seed_cov)
+        and containment >= 0.85
+        and bw >= 0.30
+        and bh >= 0.20
+        and not touches
+    )
+    if plausible:
+        info["accepted"] = True
+        candidate, edge_info = _expand_edge_bounded_enclosure(rgb, candidate)
+        info["edge_enclosure"] = edge_info
+        return candidate, info
+    return mask, info
+
+
+def _expand_edge_bounded_enclosure(
+    rgb: np.ndarray, candidate: np.ndarray
+) -> Tuple[np.ndarray, Dict[str, Any]]:
+    """Extend a partial pale-object mask to strong enclosing straight edges.
+
+    GrabCut can stop at a high-contrast logo printed on an otherwise white
+    plate.  When long top, bottom, and right boundary lines form a plausible
+    quadrilateral around the accepted candidate, union that enclosure with
+    the mask.  This is deliberately downstream of the strict rembg
+    containment check above, so ordinary textured scenes never enter it.
+    """
+    info: Dict[str, Any] = {"accepted": False}
+    ys, xs = np.nonzero(candidate)
+    if len(xs) < 16:
+        return candidate, info
+    x0, x1 = int(xs.min()), int(xs.max())
+    y0, y1 = int(ys.min()), int(ys.max())
+    bw, bh = max(1, x1 - x0), max(1, y1 - y0)
+    cx, cy = (x0 + x1) / 2.0, (y0 + y1) / 2.0
+    pad = 0.20 * max(bw, bh)
+
+    gray = cv2.cvtColor(rgb, cv2.COLOR_RGB2GRAY)
+    edges = cv2.Canny(gray, 40, 120)
+    lines = cv2.HoughLinesP(
+        edges, 1, np.pi / 180.0, threshold=45,
+        minLineLength=max(40, int(0.25 * min(bw, bh))),
+        maxLineGap=max(12, int(0.10 * max(bw, bh))),
+    )
+    if lines is None:
+        return candidate, info
+
+    horizontal = []
+    vertical = []
+    for raw in lines[:, 0]:
+        xa, ya, xb, yb = (float(v) for v in raw)
+        if not (x0 - pad <= xa <= x1 + pad and x0 - pad <= xb <= x1 + pad
+                and y0 - pad <= ya <= y1 + pad and y0 - pad <= yb <= y1 + pad):
+            continue
+        dx, dy = xb - xa, yb - ya
+        length = float(np.hypot(dx, dy))
+        if abs(dx) >= 1.7 * abs(dy) and abs(dx) > 1e-6:
+            slope = dy / dx
+            intercept = ya - slope * xa
+            ymid = slope * cx + intercept
+            left_x = min(xa, xb)
+            if left_x <= x0 + 0.12 * bw and length >= 0.30 * bw:
+                horizontal.append((ymid, -length, slope, intercept, raw))
+        if abs(dy) >= 1.7 * abs(dx) and abs(dy) > 1e-6:
+            slope = dx / dy
+            intercept = xa - slope * ya
+            xmid = slope * cy + intercept
+            if xmid >= x1 - 0.12 * bw and length >= 0.30 * bh:
+                vertical.append((xmid, -length, slope, intercept, raw))
+    tops = [line for line in horizontal if line[0] < cy]
+    bottoms = [line for line in horizontal if line[0] > cy]
+    if not tops or not bottoms or not vertical:
+        return candidate, info
+    top = min(tops, key=lambda line: line[0])
+    bottom = max(bottoms, key=lambda line: line[0])
+    right = max(vertical, key=lambda line: line[0])
+
+    def intersect(hline, vline):
+        mh, bh0 = hline[2], hline[3]
+        mv, bv0 = vline[2], vline[3]
+        denom = 1.0 - mv * mh
+        if abs(denom) < 1e-6:
+            return None
+        x = (mv * bh0 + bv0) / denom
+        return [x, mh * x + bh0]
+
+    def left_endpoint(line):
+        xa, ya, xb, yb = (float(v) for v in line[4])
+        return [xa, ya] if xa <= xb else [xb, yb]
+
+    top_right = intersect(top, right)
+    bottom_right = intersect(bottom, right)
+    if top_right is None or bottom_right is None:
+        return candidate, info
+    polygon_f = np.asarray([
+        left_endpoint(top), top_right, bottom_right, left_endpoint(bottom)
+    ], dtype=np.float32)
+    if (np.any(polygon_f[:, 0] < x0 - pad)
+            or np.any(polygon_f[:, 0] > x1 + pad)
+            or np.any(polygon_f[:, 1] < y0 - pad)
+            or np.any(polygon_f[:, 1] > y1 + pad)
+            or abs(float(cv2.contourArea(polygon_f))) < 0.5 * float(candidate.sum())):
+        return candidate, info
+
+    expanded = candidate.copy()
+    cv2.fillPoly(expanded, [np.round(polygon_f).astype(np.int32)], 1)
+    ratio = float(expanded.sum()) / max(float(candidate.sum()), 1.0)
+    if ratio > 1.65:
+        return candidate, info
+    info.update({
+        "accepted": True,
+        "area_ratio": ratio,
+        "polygon": np.round(polygon_f, 1).tolist(),
+    })
+    return expanded, info
+
+
 # ---------------------------------------------------------------------------
 # post-processing
 # ---------------------------------------------------------------------------
@@ -277,6 +446,15 @@ def segment(bundle: InputBundle, out_dir: str, cfg: PipelineConfig) -> Segmentat
 
     diagnostics["backend_requested"] = requested
     diagnostics["grabcut_iterations"] = cfg.segmentation.grabcut_iterations
+
+    if backend == "rembg" and spec.box is None and spec.point is None:
+        mask, rescue = _rescue_undersegmented_rembg(rgb, mask, cfg)
+        diagnostics["undersegmentation_rescue"] = rescue
+        if rescue.get("accepted"):
+            warnings.append(
+                "rembg selected a small component inside a larger plausible subject; "
+                "accepted containment-checked GrabCut recovery"
+            )
 
     mask = _postprocess(mask.astype(np.uint8), spec.point, spec.box)
     if int(mask.sum()) == 0:

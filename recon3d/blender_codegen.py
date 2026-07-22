@@ -268,13 +268,25 @@ def build_sweep(name, part, collection):
     cu.bevel_depth = radius
     cu.bevel_resolution = 3
     cu.use_fill_caps = True
-    sp = cu.splines.new('POLY')
-    sp.points.add(len(pts) - 1)
-    for i, p in enumerate(pts):
-        x = float(p[0])
-        y = float(p[1])
-        z = float(p[2]) if len(p) > 2 else 0.0
-        sp.points[i].co = (x, y, z, 1.0)
+    if len(pts) > 2:
+        sp = cu.splines.new('BEZIER')
+        sp.bezier_points.add(len(pts) - 1)
+        for i, p in enumerate(pts):
+            x = float(p[0])
+            y = float(p[1])
+            z = float(p[2]) if len(p) > 2 else 0.0
+            bp = sp.bezier_points[i]
+            bp.co = (x, y, z)
+            bp.handle_left_type = 'AUTO'
+            bp.handle_right_type = 'AUTO'
+    else:
+        sp = cu.splines.new('POLY')
+        sp.points.add(len(pts) - 1)
+        for i, p in enumerate(pts):
+            x = float(p[0])
+            y = float(p[1])
+            z = float(p[2]) if len(p) > 2 else 0.0
+            sp.points[i].co = (x, y, z, 1.0)
     obj = bpy.data.objects.new(name, cu)
     collection.objects.link(obj)
     return obj

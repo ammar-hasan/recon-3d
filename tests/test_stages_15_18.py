@@ -158,6 +158,46 @@ def test_pose_hypothesis_is_evidence_tracked():
             == refinement.EvidenceSource.ESTIMATED_FROM_CAMERA)
 
 
+def test_refinement_prioritizes_visible_offset_and_skips_inapplicable_revolve():
+    plan = ConstructionPlan(
+        object_id="offset",
+        parts=[PlanPart(id="body", operator=OperatorCategory.EXTRUDE,
+                        profile={"type": "polygon", "points": [],
+                                 "closed": True}, depth=0.1)],
+    )
+    ranked = [name for name, _ in refinement._rank_candidates({
+        "width_ratio": 1.04,
+        "height_ratio": 1.0,
+        "dx_px": 0.0,
+        "dy_px": -15.0,
+        "canvas_w": 1024.0,
+    }, plan)]
+    assert ranked[0] == "camera_offset_y"
+    assert "revolve_radius_scale" not in ranked
+
+
+def test_refinement_offset_preserves_auto_framing():
+    plan = ConstructionPlan(object_id="offset", parts=[])
+    record = refinement._apply_candidate(
+        plan, "camera_offset_y",
+        {"dx_px": 0.0, "dy_px": -16.0, "ref_width_px": 800.0,
+         "width_ratio": 1.0, "height_ratio": 1.0},
+        1200.0, make_cfg())
+    assert plan.camera is None
+    assert plan.metadata["validation_camera_offset"] == [0.0, 0.02]
+    assert record["camera_offset_y"]["new"] == 0.02
+
+
+def test_refinement_scale_step_is_damped():
+    plan = ConstructionPlan(object_id="scale", parts=[])
+    record = refinement._apply_candidate(
+        plan, "global_scale_x",
+        {"width_ratio": 1.25, "height_ratio": 1.0},
+        1200.0, make_cfg())
+    assert plan.metadata["global_scale"] == [1.02, 1.0, 1.0]
+    assert record["global_scale_x"]["new"] == 1.02
+
+
 def test_safety_scan_rejects_dangerous_script(tmp_path):
     bad = "import subprocess\nsubprocess.run(['ls'])\n"
     violations = runner.scan_script_safety(bad, str(tmp_path))
