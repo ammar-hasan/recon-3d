@@ -71,6 +71,7 @@ MVP_GATES = (
     "glb_valid",
     "reference_silhouette_iou",
     "major_visible_part_recall",
+    "meaningful_editability",
     "safety_violations",
 )
 
@@ -115,13 +116,35 @@ def list_cases(dataset_dir: Path) -> List[str]:
 # pipeline invocation
 # ---------------------------------------------------------------------------
 
-def run_pipeline(case: Dict[str, Any], project_dir: Path, use_mask: bool,
-                 python: str, timeout: int = 1800) -> Dict[str, Any]:
-    """Invoke the recon3d pipeline CLI; never raises."""
+def _case_label(case: Dict[str, Any]) -> Optional[str]:
+    """Top-level object class of a benchmark case (e.g. 'wheel' from 'wheel_01').
+
+    Derived from parts.json's object_id (falling back to the case id) with the
+    trailing instance number stripped. Used as the pipeline's optional
+    --label target-object input (GOAL.md Stage 1) on mask-guided runs.
+    """
+    oid = str((case.get("parts") or {}).get("object_id")
+              or case.get("case_id") or "")
+    base = re.sub(r"_?\d+$", "", oid).strip("_")
+    return base or None
+
+
+def _pipeline_command(case: Dict[str, Any], project_dir: Path, use_mask: bool,
+                      python: str, label: Optional[str] = None) -> List[str]:
     cmd = [python, "-m", "recon3d.pipeline",
            "--image", str(case["input_png"]), "--out", str(project_dir)]
     if use_mask and case["mask"] is not None:
         cmd += ["--mask", str(case["dir"] / "mask.png")]
+        if label:
+            cmd += ["--label", label]
+    return cmd
+
+
+def run_pipeline(case: Dict[str, Any], project_dir: Path, use_mask: bool,
+                 python: str, timeout: int = 1800,
+                 label: Optional[str] = None) -> Dict[str, Any]:
+    """Invoke the recon3d pipeline CLI; never raises."""
+    cmd = _pipeline_command(case, project_dir, use_mask, python, label=label)
     started = time.time()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -232,17 +255,66 @@ def blend_reopen_probe(blender: str, blend_path: Path,
 # svg silhouette rasterisation (vectorization score)
 # ---------------------------------------------------------------------------
 
+def _covers_canvas(pts_norm: np.ndarray, bbox_frac: float = 0.98,
+                   area_frac: float = 0.90) -> bool:
+    """True when a normalized polygon covers ~the whole canvas.
+
+    vtracer can emit a single background-covering path on polarity inversion;
+    such a path is background, not object, and must not be filled.
+    """
+    if pts_norm.shape[0] < 3:
+        return False
+    lo = pts_norm.min(axis=0)
+    hi = pts_norm.max(axis=0)
+    if (hi[0] - lo[0]) < bbox_frac or (hi[1] - lo[1]) < bbox_frac:
+        return False
+    area = abs(float(cv2.contourArea(pts_norm.astype(np.float32))))
+    return area >= area_frac
+
+
+def rasterize_cleaned_paths(json_path: Path, size: Tuple[int, int]) -> Optional[np.ndarray]:
+    """Rasterize the pipeline's own cleaned path data (``cleaned_<layer>.json``).
+
+    The JSON stores closed polygons in normalized 0..1 coordinates with
+    ``is_hole`` flags, so holes subtract and background-covering paths
+    (polarity inversion) are dropped. Returns None on any failure.
+    """
+    try:
+        data = _read_json(json_path)
+        if not isinstance(data, dict):
+            return None
+        polys: List[np.ndarray] = []
+        holes: List[np.ndarray] = []
+        for p in data.get("paths", []):
+            pts = p.get("points")
+            if not pts or len(pts) < 3:
+                continue
+            arr = np.asarray(pts, dtype=np.float64)
+            if arr.ndim != 2 or arr.shape[1] != 2:
+                continue
+            if _covers_canvas(arr):
+                continue
+            (holes if p.get("is_hole") else polys).append(arr)
+        if not polys:
+            return None
+        return M.rasterize_paths(polys, size, holes=holes or None)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def rasterize_svg_silhouette(svg_path: Path, size: Tuple[int, int]) -> Optional[np.ndarray]:
     """Best-effort rasterisation of an SVG's filled outline polygons.
 
     Self-contained mini-parser (absolute M/L/C/Q/Z commands, curves flattened
-    coarsely). Returns None on any failure - the score is then skipped.
+    coarsely). Robust to vtracer quirks: background-covering paths (polarity
+    inversion) are dropped, white-filled paths subtract, and remaining paths
+    combine with even-odd semantics so contained holes subtract. Returns None
+    on any failure - the score is then skipped.
     """
     try:
         import xml.etree.ElementTree as ET
         root = ET.parse(str(svg_path)).getroot()
-        polys: List[np.ndarray] = []
-        holes: List[np.ndarray] = []
+        entries: List[Tuple[np.ndarray, bool]] = []  # (points, is_white_fill)
         for el in root.iter():
             if not el.tag.endswith("path"):
                 continue
@@ -251,15 +323,32 @@ def rasterize_svg_silhouette(svg_path: Path, size: Tuple[int, int]) -> Optional[
             if pts is None or len(pts) < 3:
                 continue
             fill = el.attrib.get("fill", "black").strip().lower()
-            (holes if fill in ("#ffffff", "white") else polys).append(pts)
-        if not polys:
+            entries.append((pts, fill in ("#ffffff", "white")))
+        if not entries:
             return None
         # normalise: svg viewport may be pixels or 0..1
-        allpts = np.concatenate(polys + holes)
+        allpts = np.concatenate([p for p, _ in entries])
         vmax = float(np.abs(allpts).max())
         scale = 1.0 if vmax <= 1.5 else max(size)
-        return M.rasterize_paths([p / scale for p in polys], size,
-                                 holes=[p / scale for p in holes] or None)
+        acc = np.zeros((int(size[1]), int(size[0])), bool)
+        kept: List[Tuple[np.ndarray, bool]] = []
+        for pts, is_white in entries:
+            p = pts / scale
+            if _covers_canvas(p):
+                continue  # background path from a polarity-inverted trace
+            kept.append((p, is_white))
+        n_filled = 0
+        for p, is_white in kept:  # fills first: even-odd union
+            if is_white:
+                continue
+            acc ^= M.rasterize_polygon(p, size) > 0
+            n_filled += 1
+        for p, is_white in kept:  # explicit background fills subtract
+            if is_white:
+                acc &= ~(M.rasterize_polygon(p, size) > 0)
+        if n_filled == 0:
+            return None
+        return (acc * 255).astype(np.uint8)
     except Exception:  # noqa: BLE001
         return None
 
@@ -318,8 +407,28 @@ def _tokens(text: str) -> List[str]:
     return [t for t in re.split(r"[^a-z0-9]+", text.lower()) if t]
 
 
+# Near-synonym phrases normalised to a canonical token before matching, so a
+# pipeline that names ring parts geometrically still matches GT part labels.
+_LABEL_PHRASE_SYNONYMS = (
+    ("outer_ring", "tyre"), ("tire", "tyre"),
+    ("wheel_ring", "rim"),
+    ("centre", "hub"), ("center", "hub"),
+    ("arms", "spoke"), ("spokes", "spoke"),
+)
+
+
+def _normalize_label(text: str) -> str:
+    t = " ".join(_tokens(text))
+    for src, dst in _LABEL_PHRASE_SYNONYMS:
+        # ``t`` has already converted underscores and punctuation to spaces,
+        # so normalize the synonym source the same way before matching it.
+        src_norm = " ".join(_tokens(src))
+        t = re.sub(r"\b%s\b" % re.escape(src_norm), dst, t)
+    return t
+
+
 def _labels_match(gt_label: str, pred_name: str) -> bool:
-    gt, pr = _tokens(gt_label), _tokens(pred_name)
+    gt, pr = _tokens(_normalize_label(gt_label)), _tokens(_normalize_label(pred_name))
     if not gt or not pr:
         return False
     if set(gt) & set(pr):
@@ -401,18 +510,58 @@ def score_crop(project_dir: Path, gt_mask: Optional[np.ndarray]) -> Dict[str, An
     return out
 
 
+def _crop_space_reference(project_dir: Path, gt_mask: np.ndarray
+                          ) -> Tuple[np.ndarray, Tuple[int, int], str]:
+    """Warp the GT mask into the pipeline's normalized crop canvas.
+
+    The traces (svg / cleaned json) live in the square crop canvas recorded in
+    segmentation/crop_metadata.json (crop = (original - offset) * scale), so
+    the GT mask must be warped there for a fair comparison. Without crop
+    metadata the GT mask is used as-is at its own resolution.
+    """
+    size = (gt_mask.shape[1], gt_mask.shape[0])
+    cm = _read_json(project_dir / "segmentation" / "crop_metadata.json")
+    if not isinstance(cm, dict):
+        return gt_mask, size, "image"
+    try:
+        scale = float(cm["scale"])
+        ox, oy = float(cm["offset"][0]), float(cm["offset"][1])
+        w, h = int(cm["output_size"][0]), int(cm["output_size"][1])
+        aff = np.array([[scale, 0.0, -ox * scale],
+                        [0.0, scale, -oy * scale]], dtype=np.float64)
+        warped = cv2.warpAffine((gt_mask > 0).astype(np.uint8) * 255, aff,
+                                (w, h), flags=cv2.INTER_NEAREST)
+        return warped, (w, h), "crop"
+    except Exception:  # noqa: BLE001
+        return gt_mask, size, "image"
+
+
 def score_vectorization(project_dir: Path, gt_mask: Optional[np.ndarray]) -> Dict[str, Any]:
     out: Dict[str, Any] = {"available": False}
-    svg = project_dir / "traces" / "silhouette.svg"
-    if not svg.exists() or gt_mask is None:
+    if gt_mask is None:
         return out
-    mask = rasterize_svg_silhouette(svg, (gt_mask.shape[1], gt_mask.shape[0]))
+    ref, size, space = _crop_space_reference(project_dir, gt_mask)
+    mask = None
+    source = None
+    cleaned = project_dir / "traces" / "cleaned_silhouette.json"
+    if cleaned.exists():
+        mask = rasterize_cleaned_paths(cleaned, size)
+        if mask is not None:
+            source = "cleaned_silhouette_json"
+    if mask is None:
+        svg = project_dir / "traces" / "silhouette.svg"
+        if svg.exists():
+            mask = rasterize_svg_silhouette(svg, size)
+            if mask is not None:
+                source = "silhouette_svg_evenodd"
     if mask is None:
         return out
     out.update({
         "available": True,
-        "silhouette_svg_iou": M.mask_iou(mask, gt_mask),
-        "boundary_f_score": M.boundary_f_score(mask, gt_mask, tolerance_px=3.0),
+        "source": source,
+        "reference_space": space,
+        "silhouette_svg_iou": M.mask_iou(mask, ref),
+        "boundary_f_score": M.boundary_f_score(mask, ref, tolerance_px=3.0),
     })
     out["passed"] = out["silhouette_svg_iou"] >= 0.90
     return out
@@ -496,6 +645,89 @@ def score_plan(project_dir: Path) -> Dict[str, Any]:
     return out
 
 
+# ---------------------------------------------------------------------------
+# camera scoring (compares the plan's embedded camera against camera.json)
+# ---------------------------------------------------------------------------
+
+# rotation estimates below this confidence are treated as "no estimate"
+CAMERA_ROTATION_MIN_CONFIDENCE = 0.5
+# focal relative error that maps to a zero focal score
+CAMERA_FOCAL_REL_TOLERANCE = 0.15
+# rotation geodesic error (deg) that maps to a zero rotation score
+CAMERA_ROTATION_TOLERANCE_DEG = 45.0
+
+
+def _euler_deg_to_matrix(euler: Sequence[float]) -> np.ndarray:
+    rx, ry, rz = (math.radians(float(a)) for a in euler[:3])
+    cx, sx, cy, sy, cz, sz = (math.cos(rx), math.sin(rx), math.cos(ry),
+                              math.sin(ry), math.cos(rz), math.sin(rz))
+    mx = np.array([[1, 0, 0], [0, cx, -sx], [0, sx, cx]])
+    my = np.array([[cy, 0, sy], [0, 1, 0], [-sy, 0, cy]])
+    mz = np.array([[cz, -sz, 0], [sz, cz, 0], [0, 0, 1]])
+    return mz @ my @ mx
+
+
+def score_camera(project_dir: Path, gt_camera: Dict[str, Any]) -> Dict[str, Any]:
+    """Graded comparison of the construction plan's camera against GT.
+
+    Components (averaged over the ones that are comparable): projection-type
+    match (always comparable when both sides state it), focal relative error,
+    and rotation geodesic error (only when the plan's rotation estimate has
+    meaningful confidence). A plan with empty/low-confidence fields scores
+    honestly low (0.0) rather than nulling the group; a plan without a camera
+    section at all is unavailable (None).
+    """
+    out: Dict[str, Any] = {"available": False, "score": None}
+    plan_path = project_dir / "geometry" / "construction_plan.yaml"
+    if not plan_path.exists():
+        return out
+    try:
+        cam = (yaml.safe_load(plan_path.read_text()) or {}).get("camera")
+    except Exception:  # noqa: BLE001
+        out.update({"available": True, "score": 0.0,
+                    "error": "plan unparseable"})
+        return out
+    if not isinstance(cam, dict) or not cam:
+        return out
+    gt = gt_camera or {}
+    comps: List[float] = []
+
+    proj_pred, proj_gt = cam.get("projection"), gt.get("projection")
+    if proj_pred and proj_gt:
+        match = str(proj_pred).strip().lower() == str(proj_gt).strip().lower()
+        out["projection_match"] = match
+        comps.append(1.0 if match else 0.0)
+
+    focal_pred = (cam.get("focal_length_px") or {}).get("value")
+    focal_gt = gt.get("focal_length_px")
+    if focal_pred and focal_gt:
+        rel = abs(float(focal_pred) - float(focal_gt)) / float(focal_gt)
+        out["focal_rel_error"] = rel
+        out["focal_score"] = max(0.0, 1.0 - rel / CAMERA_FOCAL_REL_TOLERANCE)
+        comps.append(out["focal_score"])
+
+    rot = cam.get("rotation_euler_deg") or {}
+    rot_value = rot.get("value")
+    rot_conf = float(rot.get("confidence") or 0.0)
+    gt_matrix = gt.get("camera_matrix_world")
+    if (rot_value and rot_conf >= CAMERA_ROTATION_MIN_CONFIDENCE and gt_matrix):
+        try:
+            r_pred = _euler_deg_to_matrix(rot_value)
+            r_gt = np.asarray(gt_matrix, dtype=np.float64)[:3, :3]
+            cos = float(np.clip((np.trace(r_pred.T @ r_gt) - 1.0) / 2.0, -1, 1))
+            err = math.degrees(math.acos(cos))
+            out["rotation_error_deg"] = err
+            out["rotation_score"] = max(
+                0.0, 1.0 - err / CAMERA_ROTATION_TOLERANCE_DEG)
+            comps.append(out["rotation_score"])
+        except Exception:  # noqa: BLE001
+            pass
+
+    out["available"] = True
+    out["score"] = float(np.mean(comps)) if comps else 0.0
+    return out
+
+
 def score_blender(project_dir: Path, blender: Optional[str]) -> Dict[str, Any]:
     out: Dict[str, Any] = {"available": False}
     bdir = project_dir / "blender"
@@ -513,9 +745,13 @@ def score_blender(project_dir: Path, blender: Optional[str]) -> Dict[str, Any]:
     else:
         out["glb"] = {"valid": None, "errors": ["model.glb missing"]}
     if script.exists():
+        out["safety_scan_available"] = True
         out["safety_violations"] = safety_scan(script, project_dir)
     else:
-        out["safety_violations"] = ["build_model.py missing"] if not blend.exists() else []
+        # A missing script is a pipeline-completeness failure, not evidence of
+        # unauthorized code execution. Keep those concepts separate.
+        out["safety_scan_available"] = False
+        out["safety_violations"] = []
     if blender and blend.exists():
         out["reopen"] = blend_reopen_probe(blender, blend)
     else:
@@ -526,12 +762,22 @@ def score_blender(project_dir: Path, blender: Optional[str]) -> Dict[str, Any]:
 
 def score_visual(project_dir: Path) -> Dict[str, Any]:
     out: Dict[str, Any] = {"available": False}
+    # The pipeline copies the best refined render's metrics back to
+    # validation/metrics.json, so it is the final refined score; fall back to
+    # the refinement best snapshot, then to the refinement log, so the group
+    # still scores when the pipeline stopped between stages.
     metrics = _read_json(project_dir / "validation" / "metrics.json")
+    source = "validation/metrics.json" if metrics else None
+    if not metrics:
+        metrics = _read_json(project_dir / "refinement" / "best"
+                             / "validation" / "metrics.json")
+        source = "refinement/best/validation/metrics.json" if metrics else None
     rlog = _read_json(project_dir / "validation" / "refinement_log.json")
     if metrics:
         m = metrics.get("metrics", metrics)
         out.update({
             "available": True,
+            "metric_source": source,
             "silhouette_iou_final": m.get("silhouette_iou"),
             "contour_chamfer_distance": m.get("contour_chamfer_distance"),
             "depth_correlation": m.get("depth_correlation"),
@@ -546,6 +792,12 @@ def score_visual(project_dir: Path) -> Dict[str, Any]:
         if init.get("silhouette_iou") is not None and fin.get("silhouette_iou") is not None:
             out["refinement_iou_gain"] = fin["silhouette_iou"] - init["silhouette_iou"]
         out["refinement_iterations"] = rlog.get("iterations")
+        if out.get("silhouette_iou_final") is None and fin.get("silhouette_iou") is not None:
+            out.update({
+                "available": True,
+                "metric_source": "validation/refinement_log.json",
+                "silhouette_iou_final": fin.get("silhouette_iou"),
+            })
     return out
 
 
@@ -631,8 +883,15 @@ def build_report(case: Dict[str, Any], project_dir: Path,
     prim = score_primitives(project_dir)
     parts = score_parts(project_dir, case["parts"])
     plan = score_plan(project_dir)
+    camera = score_camera(project_dir, case["camera"])
     blend = score_blender(project_dir, blender)
     visual = score_visual(project_dir)
+
+    reopen = blend.get("reopen") or {}
+    editability_score = None
+    if reopen.get("reopens"):
+        editability_score = (0.6 * float(reopen.get("part_separation", False))
+                             + 0.4 * reopen.get("meaningful_name_rate", 0.0))
 
     # --- hard gates ---
     seg_iou_for_gates = (nomask_seg.get("mask_iou")
@@ -643,44 +902,37 @@ def build_report(case: Dict[str, Any], project_dir: Path,
             _gate(None if seg_iou_for_gates is None
                   else seg_iou_for_gates >= 0.5),
         "segmentation_iou":
-            (_gate(nomask_seg["mask_iou"] >= 0.85)
-             if nomask_seg.get("available") else None),
+            _gate(None if seg_iou_for_gates is None
+                  else seg_iou_for_gates >= 0.85),
         "construction_plan_valid": _gate(plan.get("valid")),
         "blender_execution_success": _gate(blend.get("execution_success")),
         "blend_reopens": (_gate(blend["reopen"]["reopens"])
                           if blend.get("reopen") else None),
-        "glb_valid": _gate(blend["glb"].get("valid")),
+        "glb_valid": _gate((blend.get("glb") or {}).get("valid")),
         "reference_silhouette_iou":
             _gate(None if visual.get("silhouette_iou_final") is None
                   else visual["silhouette_iou_final"] >= 0.80),
         "major_visible_part_recall":
             _gate(None if not parts.get("available")
                   else parts["major_part_recall"] >= 0.85),
+        "meaningful_editability":
+            _gate(None if editability_score is None
+                  else editability_score >= 0.85),
         "safety_violations":
-            _gate(blend.get("safety_violations") is not None
-                  and len(blend["safety_violations"]) == 0),
+            _gate(None if not blend.get("safety_scan_available")
+                  else len(blend["safety_violations"]) == 0),
     }
     blocking = [name for name, ok in gates.items() if ok is False]
     incomplete = any(ok is None for ok in gates.values())
 
     # --- weighted overall score (renormalised over available groups) ---
-    gt_cam_focal = (case["camera"] or {}).get("focal_length_px")
-    focal_score = None
-    if plan.get("focal_length_px") and gt_cam_focal:
-        rel = abs(plan["focal_length_px"] - gt_cam_focal) / gt_cam_focal
-        focal_score = max(0.0, 1.0 - rel / 0.15)
-    reopen = blend.get("reopen") or {}
-    editability_score = None
-    if reopen.get("reopens"):
-        editability_score = (0.6 * float(reopen.get("part_separation", False))
-                             + 0.4 * reopen.get("meaningful_name_rate", 0.0))
     group_scores: Dict[str, Optional[float]] = {
         "segmentation": seg.get("mask_iou"),
         "vectorization": vec.get("silhouette_svg_iou"),
         "primitive_fitting": prim.get("primitive_accuracy"),
         "constraints": (1.0 if parts.get("constraint_count") else None),
         "semantic_parts": parts.get("major_part_recall"),
-        "camera": focal_score,
+        "camera": camera.get("score"),
         "construction_plan": (1.0 if plan.get("valid") else
                               (0.0 if plan.get("valid") is False else None)),
         "blender_execution": (1.0 if blend.get("execution_success") else 0.0),
@@ -700,6 +952,14 @@ def build_report(case: Dict[str, Any], project_dir: Path,
     report = {
         "case_id": case_id,
         "status": manifest.get("status", "failed_validation"),
+        # guidance given to the pipeline for the scored run: the main run is
+        # mask-guided and also receives the case's object class as --label
+        # (a legitimate, documented pipeline input, GOAL.md Stage 1); the
+        # _nomask easy runs stay fully unguided to score real segmentation.
+        "guidance": {
+            "mask": case["mask"] is not None,
+            "label": _case_label(case) if case["mask"] is not None else None,
+        },
         "input": {
             "difficulty": meta.get("difficulty", "unknown"),
             "tags": meta.get("tags", []),
@@ -714,6 +974,7 @@ def build_report(case: Dict[str, Any], project_dir: Path,
             "primitive_fitting": prim,
             "semantic_parts": parts,
             "construction_plan": plan,
+            "camera": camera,
             "blender": {k: v for k, v in blend.items() if k != "reopen"},
             "blender_reopen": reopen or None,
             "visual": visual,
@@ -724,9 +985,9 @@ def build_report(case: Dict[str, Any], project_dir: Path,
         "blocking_failures": blocking,
         "gates_incomplete": incomplete,
         "final_result": {
-            # every evaluated gate passes; unknown gates are reported via
-            # gates_incomplete but do not fail the case
-            "passed_mvp": len(blocking) == 0,
+            # EVAL.md requires every hard gate to pass. Missing evidence is
+            # incomplete, never success.
+            "passed_mvp": len(blocking) == 0 and not incomplete,
             "overall_score": round(overall, 4),
         },
     }
@@ -746,7 +1007,8 @@ def evaluate_case(case: Dict[str, Any], projects_root: Path, out_dir: Path,
         if not skip_pipeline:
             project_dir.mkdir(parents=True, exist_ok=True)
             run_pipeline(case, project_dir, use_mask=True,
-                         python=python, timeout=timeout)
+                         python=python, timeout=timeout,
+                         label=_case_label(case))
             if case["meta"].get("difficulty") == "easy":
                 nomask_dir.mkdir(parents=True, exist_ok=True)
                 run_pipeline(case, nomask_dir, use_mask=False,
@@ -796,6 +1058,9 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
     cases = []
     for r in reports:
         sr = r.get("stage_results", {})
+        sil_iou = sr.get("visual", {}).get("silhouette_iou_final")
+        base_iou = r.get("baseline_svg_extrusion", {}).get(
+            "reference_silhouette_iou")
         cases.append({
             "case_id": r.get("case_id"),
             "difficulty": r.get("input", {}).get("difficulty"),
@@ -803,6 +1068,7 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
             "passed_mvp": r.get("final_result", {}).get("passed_mvp"),
             "overall_score": r.get("final_result", {}).get("overall_score"),
             "blocking_failures": r.get("blocking_failures", []),
+            "guidance": r.get("guidance"),
             "segmentation_iou": sr.get("segmentation", {}).get("mask_iou"),
             "segmentation_iou_unguided":
                 sr.get("segmentation_unguided", {}).get("mask_iou"),
@@ -813,19 +1079,25 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
                 sr.get("primitive_fitting", {}).get("primitive_accuracy"),
             "major_part_recall":
                 sr.get("semantic_parts", {}).get("major_part_recall"),
+            "camera_score": sr.get("camera", {}).get("score"),
             "construction_plan_valid":
                 sr.get("construction_plan", {}).get("valid"),
             "blender_execution_success":
                 sr.get("blender", {}).get("execution_success"),
             "blend_reopens": (sr.get("blender_reopen") or {}).get("reopens"),
             "glb_valid": sr.get("blender", {}).get("glb", {}).get("valid"),
-            "silhouette_iou": sr.get("visual", {}).get("silhouette_iou_final"),
+            "silhouette_iou": sil_iou,
             "contour_error": sr.get("visual", {}).get("contour_chamfer_distance"),
             "safety_violations":
                 len(sr.get("blender", {}).get("safety_violations") or []),
             "uncertainty_warnings": bool(r.get("uncertainty")),
-            "baseline_svg_extrusion_iou":
-                r.get("baseline_svg_extrusion", {}).get("reference_silhouette_iou"),
+            "baseline_svg_extrusion_iou": base_iou,
+            # pipeline vs baseline on the SAME final metric: reference-view
+            # silhouette IoU of the final refined pipeline render vs the
+            # baseline extrusion render
+            "pipeline_vs_baseline_iou_delta":
+                (sil_iou - base_iou
+                 if sil_iou is not None and base_iou is not None else None),
             "no_refinement_iou":
                 r.get("ablation_no_refinement", {}).get("silhouette_iou_initial"),
         })
@@ -843,6 +1115,7 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
             _mean([c["control_point_reduction"] for c in cases]),
         "primitive_accuracy_mean": _mean([c["primitive_accuracy"] for c in cases]),
         "part_recall_mean": _mean([c["major_part_recall"] for c in cases]),
+        "camera_score_mean": _mean([c["camera_score"] for c in cases]),
         "silhouette_iou_mean": _mean([c["silhouette_iou"] for c in cases]),
         "contour_error_mean": _mean([c["contour_error"] for c in cases]),
         "overall_score_mean": _mean([c["overall_score"] for c in cases]),
@@ -855,6 +1128,8 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
         "safety_violations_total": sum(c["safety_violations"] for c in cases),
         "baseline_svg_extrusion_iou_mean":
             _mean([c["baseline_svg_extrusion_iou"] for c in cases]),
+        "pipeline_vs_baseline_iou_delta_mean":
+            _mean([c["pipeline_vs_baseline_iou_delta"] for c in cases]),
         "no_refinement_iou_mean": _mean([c["no_refinement_iou"] for c in cases]),
     }
     dashboard = {"summary": summary, "cases": cases}
@@ -871,23 +1146,27 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
              "- control-point reduction (mean): %s" % _fmt(summary["control_point_reduction_mean"]),
              "- primitive accuracy (mean): %s" % _fmt(summary["primitive_accuracy_mean"]),
              "- part recall (mean): %s" % _fmt(summary["part_recall_mean"]),
+             "- camera score (mean): %s" % _fmt(summary["camera_score_mean"]),
              "- silhouette IoU (mean): %s" % _fmt(summary["silhouette_iou_mean"]),
              "- contour error (mean): %s" % _fmt(summary["contour_error_mean"]),
              "- blender success rate: %s" % _fmt(summary["blender_success_rate"]),
              "- GLB valid rate: %s" % _fmt(summary["glb_valid_rate"]),
              "- safety violations: %d" % summary["safety_violations_total"],
              "- baseline svg_extrusion IoU (mean): %s" % _fmt(summary["baseline_svg_extrusion_iou_mean"]),
+             "- pipeline vs baseline silhouette IoU delta (mean): %s"
+             % _fmt(summary["pipeline_vs_baseline_iou_delta_mean"]),
              "- no-refinement IoU (mean): %s" % _fmt(summary["no_refinement_iou_mean"]),
              "",
-             "| case | diff | status | MVP | score | seg IoU | trace IoU | prim acc | part recall | plan | blender | glb | sil IoU | baseline IoU |",
-             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+             "| case | diff | status | MVP | score | seg IoU | trace IoU | prim acc | part recall | camera | plan | blender | glb | sil IoU | baseline IoU |",
+             "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for c in cases:
-        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        lines.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             c["case_id"], c["difficulty"], c["status"],
             "PASS" if c["passed_mvp"] else "FAIL",
             _fmt(c["overall_score"]), _fmt(c["segmentation_iou"]),
             _fmt(c["trace_iou"]), _fmt(c["primitive_accuracy"]),
             _fmt(c["major_part_recall"]),
+            _fmt(c["camera_score"]),
             _yn(c["construction_plan_valid"]),
             _yn(c["blender_execution_success"]),
             _yn(c["glb_valid"]),

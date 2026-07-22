@@ -250,7 +250,22 @@ def estimate_camera(
     projection, proj_conf = _decide_projection(graph, cfg, notes)
 
     features = _circular_features(graph)
-    object_rotation = _estimate_object_rotation(features, notes)
+    label = (spec.target_label or "").lower()
+    face_circle_labels = ("wheel", "gear", "knob", "pulley", "flange")
+    if label and not any(k in label for k in face_circle_labels):
+        object_rotation = EvidencedValue(
+            value=[0.0, 0.0, 0.0],
+            unit="deg",
+            source=EvidenceSource.SEMANTIC_PRIOR,
+            confidence=0.4,
+            note="circular image features treated as surface/detail evidence "
+                 "for the labelled object, not as its dominant face plane",
+        )
+        notes.append(
+            "object tilt not inferred from incidental circular features for "
+            "label '%s'" % label)
+    else:
+        object_rotation = _estimate_object_rotation(features, notes)
 
     focal = EvidencedValue(
         value=float(cfg.camera.default_focal_px),

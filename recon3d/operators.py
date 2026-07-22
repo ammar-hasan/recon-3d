@@ -34,16 +34,19 @@ from .schemas import (
 
 _REVOLVE_CLASSES = (
     "tyre", "tire", "rim", "hub", "wheel", "bottle", "bowl", "knob",
-    "pulley", "cap", "lid", "barrel", "disk", "disc",
+    "vase", "gear", "shade", "flange", "pulley", "cap", "barrel",
+    "disk", "disc",
 )
 _EXTRUDE_CLASSES = (
-    "plate", "bracket", "logo", "sign", "panel", "base", "flange", "plaque",
+    "plate", "bracket", "logo", "sign", "panel", "base", "lid", "seat",
+    "backrest", "leg", "post", "slat", "tooth", "plaque",
 )
-_SWEEP_CLASSES = ("handle", "pipe", "rail", "cable", "tube", "hose")
+_SWEEP_CLASSES = ("handle", "pipe", "arm", "rail", "cable", "tube", "hose")
 _BOOLEAN_CLASSES = (
     "hole", "cutout", "cut-out", "vent", "socket", "recess", "bore", "slot",
 )
-_PRIMITIVE_CLASSES = ("box", "block", "case", "ball", "sphere", "cone", "capsule", "torus")
+_PRIMITIVE_CLASSES = ("box", "block", "case", "enclosure", "ball", "sphere",
+                      "cone", "capsule", "torus")
 _DETAIL_CLASSES = (
     "tread", "engraving", "embossing", "grip", "knurl", "pattern", "texture", "detail",
 )
@@ -247,7 +250,10 @@ def classify_operators(graph: SketchGraph, depth: DepthEvidence, cfg: PipelineCo
 
         # --- displacement / texture-only: small surface detail ---
         if any(k in cls for k in _DETAIL_CLASSES):
-            add(OperatorCategory.DISPLACEMENT, 0.7)
+            # Aggregated residual traces are explicitly non-structural. They
+            # must not become a noisy array/boolean merely because one member
+            # touches a broad constraint.
+            add(OperatorCategory.DISPLACEMENT, 0.95)
             add(OperatorCategory.TEXTURE_ONLY, 0.5)
         else:
             bx = part_bbox(g, part)

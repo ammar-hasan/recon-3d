@@ -106,6 +106,25 @@ def _ensure_camera(plan: ConstructionPlan, cfg: PipelineConfig) -> CameraEstimat
     return plan.camera
 
 
+def _set_object_rotation(plan: ConstructionPlan, axis: int, angle: float,
+                         cfg: PipelineConfig) -> Dict[str, Dict[str, Any]]:
+    cam = _ensure_camera(plan, cfg)
+    current = list(cam.object_rotation_euler_deg.value or [0.0, 0.0, 0.0])
+    while len(current) < 3:
+        current.append(0.0)
+    previous = float(current[axis])
+    current[axis] = float(angle)
+    cam.object_rotation_euler_deg = EvidencedValue(
+        value=[round(float(v), 6) for v in current], unit="deg",
+        source=EvidenceSource.ESTIMATED_FROM_CAMERA,
+        confidence=0.45,
+        note="render-validated object pose hypothesis; retained only when it "
+             "improves reference silhouette agreement",
+    )
+    name = "object_rotation_x" if axis == 0 else "object_rotation_y"
+    return {name: {"previous": previous, "new": float(angle)}}
+
+
 def _apply_candidate(plan: ConstructionPlan, name: str, diag: Dict[str, float],
                      focal_px: float, cfg: PipelineConfig
                      ) -> Dict[str, Dict[str, Any]]:
@@ -292,6 +311,64 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
     iterations = 0
     stop_reason = "max_iterations"
 
+    # Flat extruded objects often lack circular features, leaving the camera
+    # stage unable to infer their out-of-plane pose. Before size/translation
+    # tuning, render a bounded set of explicit tilt/spin hypotheses. Every
+    # rejected pose rolls back and the initial model can never be made worse.
+    op_names = [p.operator.value for p in best_plan.parts]
+    pose_eligible = (best_iou < 0.60
+                     and op_names.count("extrude") >= op_names.count("revolve"))
+    if pose_eligible:
+        angles = [0.0, 15.0, -15.0, 30.0, -30.0, 45.0, -45.0]
+        for axis, name in ((0, "object_rotation_x"),
+                           (1, "object_rotation_y")):
+            for angle in angles:
+                if renders_used >= rc.max_renders:
+                    break
+                current_rot = (_ensure_camera(best_plan, cfg)
+                               .object_rotation_euler_deg.value
+                               or [0.0, 0.0, 0.0])
+                if abs(float(current_rot[axis]) - angle) < 1e-9:
+                    continue
+                cand_plan = best_plan.model_copy(deep=True)
+                record = _set_object_rotation(cand_plan, axis, angle, cfg)
+                prev_iou = best_iou
+                iterations += 1
+                try:
+                    cand_manifest, cand_val = build_and_validate(cand_plan)
+                except runner.ScriptSafetyError as exc:
+                    log.actions.append(RefinementAction(
+                        iteration=iterations,
+                        observed_problem="low silhouette agreement; testing %s" % name,
+                        modified_parameters=record,
+                        metric_change={"silhouette_iou": {
+                            "previous": prev_iou, "new": None}}, kept=False))
+                    stop_reason = "safety_error: %s" % exc
+                    break
+                renders_used += 1
+                new_iou = (cand_val.metrics.silhouette_iou or 0.0
+                           if cand_val is not None else 0.0)
+                kept = bool(cand_val is not None and cand_manifest.success
+                            and new_iou > best_iou + 1e-9)
+                log.actions.append(RefinementAction(
+                    iteration=iterations,
+                    observed_problem="low silhouette agreement; testing %s" % name,
+                    modified_parameters=record,
+                    metric_change={"silhouette_iou": {
+                        "previous": prev_iou,
+                        "new": new_iou if cand_val is not None else None}},
+                    kept=kept))
+                if kept:
+                    best_plan, best_manifest, best_val = (
+                        cand_plan, cand_manifest, cand_val)
+                    best_iou = new_iou
+                    _snapshot(project, snap_dir)
+            if renders_used >= rc.max_renders:
+                break
+        # The last trial may have been rejected; restore best render artifacts
+        # before the ordinary diagnostic loop reads them.
+        _restore(project, snap_dir)
+
     for it in range(1, rc.max_iterations + 1):
         if best_iou >= rc.target_silhouette_iou:
             stop_reason = "target_reached"
@@ -329,7 +406,7 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
             cand_manifest, cand_val = build_and_validate(cand_plan)
         except runner.ScriptSafetyError as exc:
             log.actions.append(RefinementAction(
-                iteration=it, observed_problem=problem,
+                iteration=iterations, observed_problem=problem,
                 modified_parameters=record,
                 metric_change={"silhouette_iou": {"previous": prev_iou,
                                                   "new": None}},
@@ -341,7 +418,7 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
         if cand_val is None:
             # blender failed on the tweaked plan: roll back, try another knob
             log.actions.append(RefinementAction(
-                iteration=it,
+                iteration=iterations,
                 observed_problem=problem + " (blender failed, rolled back)",
                 modified_parameters=record,
                 metric_change={"silhouette_iou": {"previous": prev_iou,
@@ -352,7 +429,7 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
         new_iou = cand_val.metrics.silhouette_iou or 0.0
         kept = new_iou >= prev_iou and cand_manifest.success
         log.actions.append(RefinementAction(
-            iteration=it,
+            iteration=iterations,
             observed_problem=problem,
             modified_parameters=record,
             metric_change={"silhouette_iou": {"previous": prev_iou,

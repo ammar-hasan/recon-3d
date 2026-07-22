@@ -132,6 +132,32 @@ def test_codegen_writes_deterministic_script(tmp_path):
     assert "test_wheel" in text1
 
 
+def test_codegen_orders_build_dependencies_before_consumers():
+    target = PlanPart(
+        id="body", operator=OperatorCategory.EXTRUDE,
+        profile={"type": "polyline",
+                 "points": [[0, 0], [1, 0], [1, 1], [0, 1]],
+                 "closed": True}, depth=0.1)
+    cutter = PlanPart(
+        id="hole", operator=OperatorCategory.BOOLEAN,
+        boolean_target="body", boolean_operation="difference",
+        profile={"type": "polyline",
+                 "points": [[0.2, 0.2], [0.3, 0.2], [0.25, 0.3]],
+                 "closed": True}, depth=0.2)
+    plan = ConstructionPlan(object_id="ordered", parts=[cutter, target])
+    data = blender_codegen._ordered_plan_data(plan)
+    assert [p["id"] for p in data["parts"]] == ["body", "hole"]
+
+
+def test_pose_hypothesis_is_evidence_tracked():
+    plan = ConstructionPlan(object_id="pose", parts=[])
+    record = refinement._set_object_rotation(plan, 0, 30.0, make_cfg())
+    assert record["object_rotation_x"]["new"] == 30.0
+    assert plan.camera.object_rotation_euler_deg.value == [30.0, 0.0, 0.0]
+    assert (plan.camera.object_rotation_euler_deg.source
+            == refinement.EvidenceSource.ESTIMATED_FROM_CAMERA)
+
+
 def test_safety_scan_rejects_dangerous_script(tmp_path):
     bad = "import subprocess\nsubprocess.run(['ls'])\n"
     violations = runner.scan_script_safety(bad, str(tmp_path))

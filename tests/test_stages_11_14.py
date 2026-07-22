@@ -257,6 +257,14 @@ def test_camera_tilt_from_ellipse_ratio():
     assert est.notes  # assumptions recorded
 
 
+def test_camera_ignores_incidental_ellipses_for_labelled_bottle():
+    est = camera_mod.estimate_camera(
+        make_wheel_graph(), make_seg(), make_crop_meta(),
+        make_spec(target_label="bottle"), CFG)
+    assert est.object_rotation_euler_deg.value == [0.0, 0.0, 0.0]
+    assert est.object_rotation_euler_deg.source == EvidenceSource.SEMANTIC_PRIOR
+
+
 def test_scale_unknown_without_known_dimension():
     est = camera_mod.estimate_camera(
         make_wheel_graph(), make_seg(), make_crop_meta(), make_spec(), CFG
@@ -330,6 +338,21 @@ def test_revolve_profile_uses_observed_ring_radii():
     assert by_id["tyre"].axis["direction"] == [0.0, 0.0, 1.0]
     half_h = (max(p[1] for p in tyre_pts) - min(p[1] for p in tyre_pts)) / 2.0
     assert half_h > 0.02  # not the old degenerate 0.015 box
+
+
+def test_bottle_revolve_uses_observed_side_silhouette_and_upright_axis():
+    graph = SketchGraph(
+        primitives=[_rect_region("body_outline", 0.35, 0.1, 0.65, 0.9)],
+        parts=[_part("body", "bottle_body", ["body_outline"])])
+    graph = operators_mod.classify_operators(graph, NO_DEPTH, CFG)
+    plan = plan_mod.build_plan(
+        graph, CameraEstimate(), NO_DEPTH,
+        make_spec(target_label="bottle", output_dir="/nonexistent-dir"), CFG)
+    body = next(p for p in plan.parts if p.id == "body")
+    assert body.operator == OperatorCategory.REVOLVE
+    assert body.axis["direction"] == [0.0, 1.0, 0.0]
+    assert len(body.profile["points"]) >= 10
+    assert max(p[0] for p in body.profile["points"]) == pytest.approx(0.5)
 
 
 def test_validate_rejects_self_referencing_array():
@@ -414,6 +437,43 @@ def test_validate_parent_cycle():
         _valid_extrude_part("b", parent="a"),
     ])
     assert plan_mod.validate_plan(plan)
+
+
+def test_validate_boolean_self_target_and_dependency_cycle():
+    self_cut = PlanPart(
+        id="self_cut", operator=OperatorCategory.BOOLEAN,
+        boolean_target="self_cut", boolean_operation="difference",
+        profile={"type": "polyline", "points": [[0, 0], [1, 0], [0, 1]],
+                 "closed": True}, depth=0.1)
+    errors = plan_mod.validate_plan(_plan_with([self_cut]))
+    assert any("itself" in e for e in errors)
+
+    a = self_cut.model_copy(update={"id": "a", "boolean_target": "b"})
+    b = self_cut.model_copy(update={"id": "b", "boolean_target": "a"})
+    errors = plan_mod.validate_plan(_plan_with([a, b]))
+    assert any("dependency cycle" in e for e in errors)
+
+
+def test_boolean_target_prefers_larger_non_cutter_container():
+    graph = make_bracket_graph()
+    # Add a same-size sibling hole and constraints in the adversarial order
+    # that previously produced cutter-to-cutter cycles.
+    graph.primitives.append(_circle("hole_prim_2", 0.6, 0.5, 0.05))
+    graph.parts.append(_part("hole_2", "hole", ["hole_prim_2"]))
+    graph.constraints.insert(0, GeometricConstraint(
+        type=ConstraintType.CONTAINMENT,
+        entities=["hole_prim", "hole_prim_2"], confidence=0.6))
+    graph.constraints.append(GeometricConstraint(
+        type=ConstraintType.CONTAINMENT,
+        entities=["hole_prim_2", "bracket_region"], confidence=0.9))
+    graph = operators_mod.classify_operators(graph, NO_DEPTH, CFG)
+    plan = plan_mod.build_plan(
+        graph, CameraEstimate(), NO_DEPTH,
+        make_spec(output_dir="/nonexistent-dir"), CFG)
+    by_id = {p.id: p for p in plan.parts}
+    assert by_id["hole"].boolean_target == "bracket"
+    assert by_id["hole_2"].boolean_target == "bracket"
+    assert plan_mod.validate_plan(plan) == []
 
 
 def test_validate_zero_axis():

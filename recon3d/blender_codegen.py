@@ -601,9 +601,39 @@ print("RECON3D_MANIFEST_WRITTEN success=%s" % manifest["success"])
 '''
 
 
+def _ordered_plan_data(plan: ConstructionPlan) -> dict:
+    """Return plan data in deterministic Blender build-dependency order.
+
+    Parent objects, boolean targets, and array/mirror prototypes precede the
+    parts that consume them. Validation rejects cycles; the stable fallback at
+    the end keeps script generation deterministic even for an invalid plan.
+    """
+    data = plan.model_dump(mode="json")
+    pending = list(data.get("parts") or [])
+    ids = {p.get("id") for p in pending}
+    ordered = []
+    built = set()
+    while pending:
+        progressed = False
+        for part in list(pending):
+            deps = [part.get("parent"), part.get("boolean_target"),
+                    part.get("source_part")]
+            deps = {d for d in deps if d in ids and d != part.get("id")}
+            if deps <= built:
+                ordered.append(part)
+                built.add(part.get("id"))
+                pending.remove(part)
+                progressed = True
+        if not progressed:
+            ordered.extend(pending)
+            break
+    data["parts"] = ordered
+    return data
+
+
 def _plan_to_json(plan: ConstructionPlan) -> str:
     """Serialise the plan deterministically (sorted keys, enums to values)."""
-    return json.dumps(plan.model_dump(mode="json"), sort_keys=True)
+    return json.dumps(_ordered_plan_data(plan), sort_keys=True)
 
 
 def generate_blender_script(plan: ConstructionPlan, out_dir: str,

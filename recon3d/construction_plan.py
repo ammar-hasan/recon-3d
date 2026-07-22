@@ -157,6 +157,11 @@ class _PlanBuilder:
             key=lambda p: (lambda b: (b[2] - b[0]) * (b[3] - b[1]))(primitive_bbox(p)),
         )
         pts = outline_of(prim)
+        # Some fitted open/symmetric primitives store a two-point parametric
+        # summary while retaining the observed contour in fallback_points.
+        # Closed construction operators need that contour, not the summary.
+        if len(pts) < 3 and len(prim.fallback_points) >= 3:
+            pts = [(float(x), float(y)) for x, y in prim.fallback_points]
         return [[round(x, 6), round(y, 6)] for x, y in (self.frame.point(u, v) for u, v in pts)]
 
     def extrusion_depth(self, part: SemanticPart, notes: List[str]) -> float:
@@ -242,8 +247,97 @@ class _PlanBuilder:
                 ladder.append(r)
         return ladder
 
+    def _axial_revolve_profile(self, part: SemanticPart):
+        """Observed side silhouette as a radius/height profile.
+
+        Upright vessels revolve around image-up (object Y), unlike wheels
+        whose visible circular face revolves around object Z.  Scanline
+        intersections make the envelope stable even when the fitted contour
+        has unevenly spaced points.
+        """
+        cls = (part.part_class or "").lower()
+        axial = ("bottle", "vase", "mug", "cup", "knob", "cap")
+        if not any(k in cls for k in axial):
+            return None
+        prims = part_primitives(self.graph, part)
+        if cls == "cap":
+            ellipses = [p for p in prims if primitive_radii(p)]
+            if ellipses:
+                prim = max(ellipses, key=lambda p: max(primitive_radii(p)))
+                cu, cv = primitive_center(prim)
+                cx, hy = self.frame.point(cu, cv)
+                radius = self.frame.length(max(primitive_radii(prim)))
+                half_h = max(0.05, 0.45 * radius)
+                return ({
+                    "type": "polyline",
+                    "points": [[0.0, round(hy - half_h, 6)],
+                               [round(radius, 6), round(hy - half_h, 6)],
+                               [round(radius, 6), round(hy + half_h, 6)],
+                               [0.0, round(hy + half_h, 6)]],
+                    "closed": True,
+                }, {"origin": [round(cx, 6), 0.0, 0.0],
+                    "direction": [0.0, 1.0, 0.0]})
+        candidates = []
+        for prim in prims:
+            if primitive_radii(prim) is not None:
+                continue
+            pts = outline_of(prim)
+            if len(pts) < 3:
+                continue
+            bx = primitive_bbox(prim)
+            area = (bx[2] - bx[0]) * (bx[3] - bx[1])
+            candidates.append((area, prim, pts))
+        if not candidates:
+            return None
+        _, _, uv_points = max(candidates, key=lambda item: item[0])
+        xy = [self.frame.point(float(u), float(v)) for u, v in uv_points]
+        xmin = min(x for x, _ in xy)
+        xmax = max(x for x, _ in xy)
+        ymin = min(y for _, y in xy)
+        ymax = max(y for _, y in xy)
+        axis_x = 0.5 * (xmin + xmax)
+        if ymax - ymin <= 1e-9:
+            return None
+        boundary = []
+        closed = xy + [xy[0]]
+        for i in range(33):
+            h = ymin + (ymax - ymin) * i / 32.0
+            intersections = []
+            for (x0, y0), (x1, y1) in zip(closed, closed[1:]):
+                if abs(y1 - y0) <= 1e-12:
+                    if abs(h - y0) <= 1e-9:
+                        intersections.extend([x0, x1])
+                    continue
+                if h < min(y0, y1) or h > max(y0, y1):
+                    continue
+                t = (h - y0) / (y1 - y0)
+                intersections.append(x0 + t * (x1 - x0))
+            if intersections:
+                radius = max(abs(x - axis_x) for x in intersections)
+                boundary.append([round(radius, 6), round(h, 6)])
+        if len(boundary) < 4:
+            return None
+        profile = {
+            "type": "polyline",
+            "points": [[0.0, round(ymin, 6)]] + boundary
+                      + [[0.0, round(ymax, 6)]],
+            "closed": True,
+        }
+        axis = {"origin": [round(axis_x, 6), 0.0, 0.0],
+                "direction": [0.0, 1.0, 0.0]}
+        return profile, axis
+
     def build_revolve(self, part: SemanticPart, conf: float) -> PlanPart:
         notes: List[str] = []
+        axial = self._axial_revolve_profile(part)
+        if axial is not None:
+            profile, axis = axial
+            notes.append(
+                "axial radius profile fitted from the observed side silhouette")
+            pp = self.base_part(part, OperatorCategory.REVOLVE, conf, notes)
+            pp.axis = axis
+            pp.profile = profile
+            return pp
         prims = [p for p in part_primitives(self.graph, part) if p.type in ELLIPSE_LIKE]
         cu, cv = self._part_center_uv(part)
         cx, cy = self.frame.point(cu, cv)
@@ -408,11 +502,7 @@ class _PlanBuilder:
     def build_radial_array(self, part: SemanticPart, conf: float) -> PlanPart:
         notes: List[str] = []
         ids = set(part.primitive_ids)
-        constraint = next(
-            (c for c in self.graph.constraints
-             if c.type in _RADIAL_CONSTRAINTS and ids.intersection(c.entities)),
-            None,
-        )
+        constraint = self._radial_constraint(part)
         count = len(part.primitive_ids) or 3
         source_part = part.id
         centre_uv = None
@@ -473,19 +563,52 @@ class _PlanBuilder:
         notes = ["prototype geometry extruded for radial array '%s'" % part.id]
         prims = part_primitives(self.graph, part)
         proto_prim = None
-        ids = set(part.primitive_ids)
-        constraint = next(
-            (c for c in self.graph.constraints
-             if c.type in _RADIAL_CONSTRAINTS and ids.intersection(c.entities)),
-            None,
-        )
+        constraint = self._radial_constraint(part)
         if constraint is not None:
             pid = constraint.params.get("prototype")
             proto_prim = next((p for p in prims if p.id == pid), None)
         if proto_prim is None and prims:
             proto_prim = prims[0]
-        points = self._prototype_outline(proto_prim) if proto_prim is not None else []
-        if proto_prim is not None:
+        generated = (constraint is not None
+                     and constraint.source == EvidenceSource.SEMANTIC_PRIOR)
+        if generated:
+            centre = constraint.params.get("center") or [self.frame.cx, self.frame.cy]
+            cu, cv = float(centre[0]), float(centre[1])
+            cx, cy = self.frame.point(cu, cv)
+            ladder = self._radius_ladder(cu, cv)
+            if len(ladder) >= 3:
+                # Ignore near-duplicate outer-edge retraces and tiny highlight
+                # ellipses.  The spoke runs from the first substantial hub
+                # rung to the first substantial rim rung.
+                outer = ladder[0]
+                rim = next((r for r in ladder[1:] if r < 0.65 * outer),
+                           0.48 * outer)
+                hub = next((r for r in ladder if r < 0.65 * rim),
+                           0.35 * rim)
+                # Small overlaps prevent visible floating gaps where the
+                # generated bar meets the revolved hub/rim surfaces.
+                r0 = 0.75 * self.frame.length(hub)
+                r1 = 1.05 * self.frame.length(rim)
+            elif len(ladder) >= 2:
+                r0 = 0.22 * self.frame.length(ladder[0])
+                r1 = self.frame.length(ladder[1])
+            else:
+                r0, r1 = 0.12, 0.25
+            if r1 <= 1.05 * r0:
+                r1 = max(1.8 * r0, r0 + 0.08)
+            half_width = max(0.012, 0.18 * (r1 - r0))
+            points = [
+                [round(cx + r0, 6), round(cy - half_width, 6)],
+                [round(cx + r1, 6), round(cy - half_width, 6)],
+                [round(cx + r1, 6), round(cy + half_width, 6)],
+                [round(cx + r0, 6), round(cy + half_width, 6)],
+            ]
+            notes.append(
+                "radial rectangle generated between observed hub and rim; "
+                "trace fragments were not reliable prototype geometry")
+        else:
+            points = self._prototype_outline(proto_prim) if proto_prim is not None else []
+        if proto_prim is not None and not generated:
             notes.append("prototype curve '%s'" % proto_prim.id)
         depth = self.extrusion_depth(part, notes)
         pp = PlanPart(
@@ -496,7 +619,8 @@ class _PlanBuilder:
             visibility=part.visibility,
             evidence=EvidencedValue(
                 value=OperatorCategory.EXTRUDE.value,
-                source=EvidenceSource.FITTED_FROM_OBSERVATION,
+                source=(EvidenceSource.GENERATED_HYPOTHESIS if generated
+                        else EvidenceSource.FITTED_FROM_OBSERVATION),
                 confidence=round(max(0.3, conf - 0.2), 3),
                 note="; ".join(notes),
             ),
@@ -528,10 +652,16 @@ class _PlanBuilder:
     def build_boolean(self, part: SemanticPart, conf: float) -> PlanPart:
         notes: List[str] = []
         target = self._boolean_target(part)
-        if target is not None:
-            notes.append("cuts into part '%s'" % target)
-        else:
-            notes.append("boolean target unresolved; validation will flag this")
+        if target is None:
+            # A visually nested mark without a trustworthy larger solid is
+            # surface evidence, not a valid destructive modeling operation.
+            notes.append("boolean target unresolved; retained as surface detail")
+            pp = self.base_part(part, OperatorCategory.DISPLACEMENT, conf, notes)
+            prims = part_primitives(self.graph, part)
+            if prims:
+                pp.source_curve = prims[0].id
+            return pp
+        notes.append("cuts into part '%s'" % target)
         pp = self.base_part(part, OperatorCategory.BOOLEAN, conf, notes)
         pp.boolean_target = target
         pp.boolean_operation = "difference"
@@ -563,6 +693,23 @@ class _PlanBuilder:
 
     # -- lookups --------------------------------------------------------------
 
+    def _radial_constraint(self, part: SemanticPart):
+        ids = set(part.primitive_ids)
+        candidates = [
+            c for c in self.graph.constraints
+            if c.type in _RADIAL_CONSTRAINTS
+            and int(c.params.get("count") or 0) >= 3
+            and ids.intersection(c.entities)
+        ]
+        if not candidates:
+            return None
+        return max(candidates, key=lambda c: (
+            len(ids.intersection(c.entities)),
+            int(c.params.get("prototype") in ids),
+            float(c.confidence),
+            tuple(sorted(c.entities)),
+        ))
+
     def _owner_of(self, entity_id: str, exclude: Optional[str]) -> Optional[str]:
         for p in self.graph.parts:
             if exclude is not None and p.id == exclude:
@@ -572,29 +719,41 @@ class _PlanBuilder:
         return None
 
     def _boolean_target(self, part: SemanticPart) -> Optional[str]:
+        """Smallest substantially larger non-cutter containing ``part``.
+
+        Raw containment constraints can be duplicated or bidirectional across
+        trace layers. Selecting their first partner created boolean cycles and
+        same-size sibling targets. Geometry and operator role are authoritative
+        here: a cutter must be <30% of a real container.
+        """
         ids = set(part.primitive_ids)
+        my_bbox = part_bbox(self.graph, part)
+        my_area = max((my_bbox[2] - my_bbox[0]) * (my_bbox[3] - my_bbox[1]), 1e-12)
+        my_cx = (my_bbox[0] + my_bbox[2]) / 2.0
+        my_cy = (my_bbox[1] + my_bbox[3]) / 2.0
+        constrained_owners = set()
         for c in self.graph.constraints:
             if c.type != ConstraintType.CONTAINMENT or not ids.intersection(c.entities):
                 continue
             for e in c.entities:
                 owner = self._owner_of(e, exclude=part.id)
                 if owner is not None:
-                    return owner
-        # geometric fallback: smallest closed part whose bbox contains this one
-        my_bbox = part_bbox(self.graph, part)
-        my_cx = (my_bbox[0] + my_bbox[2]) / 2.0
-        my_cy = (my_bbox[1] + my_bbox[3]) / 2.0
-        best = None
-        best_area = None
+                    constrained_owners.add(owner)
+
+        candidates: List[Tuple[int, float, str]] = []
         for other in self.graph.parts:
             if other.id == part.id:
                 continue
+            if other.selected_operator == OperatorCategory.BOOLEAN.value:
+                continue
             bx = part_bbox(self.graph, other)
             if bx[0] <= my_cx <= bx[2] and bx[1] <= my_cy <= bx[3]:
-                area = (bx[2] - bx[0]) * (bx[3] - bx[1])
-                if best_area is None or area < best_area:
-                    best, best_area = other.id, area
-        return best
+                area = max((bx[2] - bx[0]) * (bx[3] - bx[1]), 1e-12)
+                if my_area / area < 0.3:
+                    candidates.append(
+                        (0 if other.id in constrained_owners else 1, area, other.id)
+                    )
+        return min(candidates)[2] if candidates else None
 
 
 def build_plan(
@@ -727,6 +886,38 @@ def validate_plan(plan: ConstructionPlan) -> List[str]:
                 break
             seen.add(cur)
             cur = parent_of.get(cur)
+
+    # Build dependencies must also be acyclic. Blender needs boolean targets
+    # and array/mirror prototypes to exist before their dependent operation.
+    dependency_of: Dict[str, List[str]] = {}
+    for p in plan.parts:
+        deps = []
+        if p.boolean_target is not None:
+            if p.boolean_target == p.id:
+                errors.append("part '%s': boolean_target must not be the part itself" % p.id)
+            deps.append(p.boolean_target)
+        if p.source_part is not None:
+            deps.append(p.source_part)
+        dependency_of[p.id] = deps
+    for pid in dependency_of:
+        visiting = set()
+        visited = set()
+
+        def visit(cur: str) -> bool:
+            if cur in visiting:
+                return True
+            if cur in visited:
+                return False
+            visiting.add(cur)
+            for dep in dependency_of.get(cur, []):
+                if dep in dependency_of and visit(dep):
+                    return True
+            visiting.remove(cur)
+            visited.add(cur)
+            return False
+
+        if visit(pid):
+            errors.append("plan: build dependency cycle detected involving part '%s'" % pid)
 
     for p in plan.parts:
         # finite transforms / axes / profiles

@@ -20,6 +20,7 @@ from recon3d.schemas import (
     EvidenceSource,
     InputSpec,
     PrimitiveType,
+    SketchGraph,
     TraceLayer,
     TraceLayerName,
     VectorPath,
@@ -519,6 +520,41 @@ class TestSemanticParts:
         classes = [p.part_class for p in out.parts]
         assert classes[0] == "box"
         assert "panel" in classes or "bezel" in classes or "insert" in classes
+
+    def test_wheel_detected_without_label_or_precomputed_repetition(self):
+        graph = SketchGraph(primitives=wheel_primitives(), constraints=[])
+        out = decompose_parts(
+            graph, "", InputSpec(image_paths=["synthetic.png"]), CFG)
+        classes = {p.part_class for p in out.parts}
+        assert {"wheel", "tyre", "rim", "hub", "spokes"} <= classes
+        repetitions = [c for c in out.constraints
+                       if c.type == ConstraintType.ROTATIONAL_REPETITION]
+        assert len(repetitions) == 1
+        assert repetitions[0].params["count"] == 5
+
+    def test_nonwheel_ring_system_gets_stable_geometric_names(self):
+        graph = SketchGraph(primitives=wheel_primitives()[:3], constraints=[])
+        out = decompose_parts(
+            graph, "", InputSpec(image_paths=["synthetic.png"]), CFG)
+        classes = {p.part_class for p in out.parts}
+        assert {"ring_system", "outer_shell", "inner_panel", "hub"} <= classes
+        assert "tyre" not in classes
+
+    def test_bottle_label_does_not_promote_highlight_rings_to_panels(self):
+        paths = [
+            make_path(rect_pts((0.5, 0.5), 0.35, 0.75, 0.0), True,
+                      "bottle_outline"),
+            make_path(circle_pts((0.5, 0.45), 0.08), True, "highlight_outer"),
+            make_path(circle_pts((0.5, 0.45), 0.04), True, "highlight_inner"),
+        ]
+        prims = fit_primitives([make_layer(paths)], CFG)
+        graph = SketchGraph(primitives=prims, constraints=[])
+        out = decompose_parts(
+            graph, "", InputSpec(image_paths=["synthetic.png"],
+                                  target_label="bottle"), CFG)
+        classes = {p.part_class for p in out.parts}
+        assert "bottle_body" in classes
+        assert "inner_panel" not in classes
 
     def test_deterministic_ids(self, tmp_path):
         def run():
