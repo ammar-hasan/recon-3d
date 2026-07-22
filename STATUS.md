@@ -1,81 +1,103 @@
 # STATUS — Image-to-Editable-3D Reconstruction Pipeline
 
-Last updated: after integration hardening (commit `a7ece4d`).
-Resume instructions are at the bottom.
+Last updated: 2026-07-23 after the clean final benchmark.
 
-## What exists and works
+## Current outcome
 
-- **Full 18-stage pipeline** in `recon3d/` per GOAL.md + CONTRACTS.md:
-  input → segmentation (rembg/grabcut/classical) → crop → preprocessing
-  (5 evidence layers) → vectorize (vtracer) → SVG cleanup → primitive
-  fitting → constraint detection → sketch graph → semantic parts → camera →
-  depth/normals → operator classification → construction plan → Blender
-  codegen → sandboxed runner → render validation → refinement loop →
-  report.md + manifest.json per run.
-- **Eval framework** in `evals/`: metrics lib, Level A unit tests, Level B
-  stage tests, Level C e2e runner (`evals/e2e/run_e2e.py` with MVP hard
-  gates, baselines, dashboard), umbrella CLI `evals/run_evals.py`.
-- **Synthetic benchmark**: 18 cases in `evals/benchmark/dataset/` (gitignored,
-  regenerable via `evals/benchmark/generate_benchmark.py`), covering
-  revolution/extruded/radial/mirrored/assembly/sweep classes with full GT.
-- **Test status**: `pytest tests/ evals/unit evals/stage -q` → 203 passed,
-  1 skipped (includes real Blender build/validation/refinement tests).
-- **Verified e2e runs**:
-  - `projects/smoke_wheel_01`: status=success, silhouette IoU 0.720 →
-    **0.912** after refinement (clay 0.903, chamfer 0.008, SSIM 0.906).
-    Plan: wheel/tyre/rim/hub revolve parts. Spokes NOT yet reconstructed
-    (no clean count-5 repetition cluster found in traces).
-  - `projects/smoke_bracket_01`: partial_success, valid plan (extrude +
-    booleans), but silhouette IoU 0.338 — flat plate modeled face-on
-    (orientation of extruded parts is wrong for this view).
+The structured MVP is complete and passes its automated acceptance suite.
 
-## Environment notes
+- Fresh Level C benchmark: **18/18 MVP hard-gate passes**.
+- Mean final silhouette IoU: **0.910**.
+- Mean Blender-rendered SVG-extrusion baseline IoU: **0.890**.
+- Mean no-refinement IoU: **0.880**; only 15/18 cases meet the 0.80
+  silhouette gate without refinement.
+- Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
+- Mean major visible-part recall: **1.000**.
+- Safety violations: **0**.
+- Regression suite: **236 passed, 1 skipped**, including real Blender build,
+  validation, and refinement tests.
 
-- Python 3.9.6 venv at `.venv/` (no match statements, no PEP 604 unions).
-- Blender 5.2.0 at `/Applications/Blender.app/Contents/MacOS/Blender`.
-  Eevee id is `BLENDER_EEVEE`; Principled input is `Transmission Weight`;
-  no capsule primitive; `matrix_world` stale until `view_layer.update()`.
-- rembg model cached at `~/.u2net/isnet-general-use.onnx`.
-- Blender MCP is connected (interactive session) — prefer background mode
-  for pipeline work to avoid touching the open user project.
-- Codex CLI available at `~/.local/bin/codex` for occasional second opinions.
-- User instruction: **commit + push (origin/main) after every big chunk.**
+The reproducible results and per-case table are in
+[`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md). Generated projects and raw result
+directories remain gitignored.
 
-## Remaining work (priority order)
+## Implemented system
 
-1. **Run full e2e benchmark** (all 18 cases):
-   `.venv/bin/python -m evals.run_evals --level e2e`
-   (or `evals/e2e/run_e2e.py --cases all --out evals/results/`).
-   Inspect `dashboard.json/dashboard.md`, record per-case hard-gate status.
-2. **Fix extruded-part orientation** (bracket_01 IoU 0.338): extrude depth
-   axis must align with camera view axis for flat plates, not face-on
-   default. Likely affects sign_01, gear_01/02, crate/box cases too.
-3. **Spoke/radial repetition recovery**: wheel spokes not reconstructed —
-   improve repetition clustering on spoke traces (structural_edges layer)
-   so radial_array(count=5) fires for wheels/gears.
-4. **Iterate per-case failures** from the dashboard until MVP hard gates
-   pass on easy+medium cases (segmentation ≥0.85, plan valid, blender ok,
-   blend reopens, glb valid, silhouette IoU ≥0.80, part recall ≥0.85,
-   editability, 0 safety violations).
-5. **Phase 5 polish**: depth/normals exist (silhouette+shading); verify
-   depth-aware profiles help and don't regress (Eval 12).
-6. **Phase 6 — multiview**: multiple images accepted by InputSpec but no
-   cross-view reasoning yet. Need: per-view segmentation/traces, shared
-   part graph, relative camera pose solving, consistent scale, joint
-   silhouette optimization. (Biggest missing feature.)
-7. **Phase 7 — generative hypotheses**: module to propose hidden-side
-   completion / cross-sections / orthographic views as
-   `generated_hypothesis` (low confidence), validated against observed
-   evidence, rejected when inconsistent. Procedural mirror/revolve
-   hypotheses are acceptable (no external gen model required).
-8. **Ablations + regression suite** runs for the report (EVAL.md requires
-   ablation table: no-refinement, no-primitive-fitting, etc.).
-9. **Final report + README refresh**, final commit + push.
+- All 18 stages described by `GOAL.md`: input, target selection,
+  segmentation, crop normalization, preprocessing, vectorization, cleanup,
+  primitive fitting, constraints, sketch graph, semantic decomposition,
+  camera estimation, depth/normals, operator selection, construction plan,
+  Blender generation, sandboxed execution, render validation, refinement,
+  reporting, and export.
+- Manufactured-object operator families: revolve, extrude, sweep, primitive
+  assembly, Boolean, loft/freeform fallback, displacement, mirror, and radial
+  array.
+- Evidence provenance and confidence are retained across observed geometry,
+  geometric/semantic inference, and generated hypotheses.
+- Phase 6 multiview support independently processes secondary views, builds
+  source-labelled cross-view part matches, estimates relative pose and scale
+  consensus, and preserves primary observed primitives.
+- Phase 7 hidden-geometry support proposes and audits revolve
+  cross-sections, hidden-side continuations, mirror completions, and partial
+  occlusion completions. Hypothesis confidence is capped at 0.5 and every
+  candidate is accepted or rejected explicitly.
+- Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 
-## How to resume
+## Verification commands
 
-1. `git pull` (everything is pushed; latest commit on `main`).
-2. Read this file + TODO state above; item 1 is the next action.
-3. Run tests to confirm a green baseline:
-   `.venv/bin/python -m pytest tests/ evals/unit evals/stage -q`
-4. Continue with remaining work item 1.
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest -q tests evals/unit evals/stage
+
+PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
+  --cases all \
+  --projects-root projects/e2e_final \
+  --out evals/results_final \
+  --workers 1 \
+  --python .venv/bin/python
+```
+
+The final test run produced `236 passed, 1 skipped`. The final E2E run produced
+`18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
+
+## Additional ablation evidence
+
+- No refinement, all 18 cases: mean IoU falls from 0.910 to 0.880; pipe and
+  both wheels fall below the 0.80 silhouette gate.
+- No depth/normals, three-family sample (`bottle_01`, `gear_01`,
+  `pipe_elbow_01`): 2/3 hard-gate passes and mean IoU 0.906. The effect is
+  mixed; the pipe loses 0.0044 IoU and falls below its gate.
+- Blender-rendered direct SVG extrusion, all 18 cases: mean IoU 0.890 but zero
+  semantic part recall and zero meaningful editability by definition.
+
+The depth/normals ablation config is tracked at
+`evals/ablations/no_depth_normals.yaml`.
+
+## Known limits and next research work
+
+These do not block the synthetic MVP result, but they should not be hidden:
+
+1. The 18-case benchmark is synthetic and uses a supplied mask and label for
+   the reconstruction path. Unguided segmentation is scored where available,
+   but real-photo coverage remains limited.
+2. The benchmark is single-view. Multiview fusion has unit/integration and
+   real two-image smoke coverage, not a calibrated multiview ground-truth
+   benchmark.
+3. Mean camera score is 0.500 because single-view focal length/physical scale
+   remain weakly observable; the system reports that uncertainty rather than
+   inventing calibration.
+4. `pipe_elbow_01` passes narrowly at 0.80008. `chair_01`, `pipe_elbow_01`,
+   and `table_01` retain internal `partial_success` status because the
+   pipeline's preferred refinement target is 0.90 even though every MVP hard
+   gate passes.
+5. The full 11-way ablation matrix, opaque image-to-mesh/VLM baselines, and
+   human edit-task evaluation from `EVAL.md` remain research evaluation work.
+   Only the concrete ablations listed above have been run.
+
+## Repository checkpoints
+
+- `175c018` — project-level Blender MCP configuration.
+- `39bd7fc` — semantic planning and benchmark hardening.
+- `d5d864e` — multiview, hypotheses, targeted geometry fixes, and refinement
+  hardening.
+
+`main` is pushed to `origin/main` after each completed implementation chunk.
