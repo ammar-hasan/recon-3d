@@ -1,0 +1,13 @@
+# Project-scoped Codex configuration. Codex loads this file for trusted repos.
+
+[mcp_servers.blender]
+command = "uvx"
+args = [
+  "--from",
+  "git+https://projects.blender.org/lab/blender_mcp.git#subdirectory=mcp",
+  "blender-mcp",
+]
+enabled = true
+startup_timeout_sec = 30
+tool_timeout_sec = 120
+default_tools_approval_mode = "writes"
