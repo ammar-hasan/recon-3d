@@ -76,8 +76,13 @@ try:
                            math.radians(float(base[1]) - float(P["azimuth_deg"])),
                            math.radians(float(base[2])))
     camera_data = bpy.data.cameras.new("recon3d_heldout_camera")
-    camera_data.type = "ORTHO"
-    camera_data.ortho_scale = float(P["ortho_scale"])
+    camera_data.type = P["camera_type"]
+    if camera_data.type == "ORTHO":
+        camera_data.ortho_scale = float(P["ortho_scale"])
+    else:
+        camera_data.lens = float(P["lens_mm"])
+        camera_data.sensor_width = float(P["sensor_width_mm"])
+        camera_data.sensor_fit = "HORIZONTAL"
     camera = bpy.data.objects.new("recon3d_heldout_camera", camera_data)
     scene.collection.objects.link(camera)
     camera.location = tuple(float(v) for v in P["camera_location"])
@@ -149,16 +154,41 @@ with open(MANIFEST_PATH, "w") as fh:
 
 
 def fixed_camera_from_primary(seg: SegmentationResult,
-                              image_shape: Tuple[int, int]) -> Dict:
-    """Return orthographic framing derived only from the primary view."""
+                              image_shape: Tuple[int, int],
+                              calibration: Dict | None = None) -> Dict:
+    """Return framing derived only from the primary view and its intrinsics."""
     height, width = image_shape
     x0, y0, x1, y1 = seg.bbox
     object_width = max(1, x1 - x0)
     view_width = float(width) / float(object_width)
     cx = (x0 + x1) * 0.5 / width
     cy = (y0 + y1) * 0.5 / height
+    if calibration is not None:
+        focal_px = float(calibration.get("focal_length_px", 0.0))
+        lens_mm = float(calibration.get("lens_mm", 0.0))
+        sensor_width_mm = float(calibration.get("sensor_width_mm", 0.0))
+        if min(focal_px, lens_mm, sensor_width_mm) > 0.0:
+            # The calibrated hull spans one normalized world unit in X. Set
+            # camera distance so that unit projects to the primary bbox width;
+            # offset is solved from the primary bbox centre, never the held-out
+            # target.
+            distance = focal_px / object_width
+            return {
+                "camera_type": "PERSP",
+                "ortho_scale": None,
+                "lens_mm": lens_mm,
+                "sensor_width_mm": sensor_width_mm,
+                "camera_location": [
+                    -(cx - 0.5) * float(width) * distance / focal_px,
+                    (cy - 0.5) * float(height) * distance / focal_px,
+                    distance,
+                ],
+            }
     return {
+        "camera_type": "ORTHO",
         "ortho_scale": view_width * float(height) / float(width),
+        "lens_mm": None,
+        "sensor_width_mm": None,
         "camera_location": [-(cx - 0.5) * view_width,
                             (cy - 0.5) * view_width, 2.0],
     }
@@ -266,7 +296,10 @@ def evaluate_heldout(case_dir: str, project_dir: str,
         (project / "segmentation" / "segmentation_result.json").read_text())
     plan = SchemaIO.load_yaml(
         ConstructionPlan, project / "geometry" / "construction_plan.yaml")
-    framing = fixed_camera_from_primary(seg, target.shape)
+    primary_camera_path = case / "camera.json"
+    primary_camera = (json.loads(primary_camera_path.read_text())
+                      if primary_camera_path.is_file() else None)
+    framing = fixed_camera_from_primary(seg, target.shape, primary_camera)
     output_path = project / "validation" / ("heldout_%s.png" % heldout_view)
     reference_copy = project / "validation" / "heldout_reference.glb"
     shutil.copy2(case / "reference.glb", reference_copy)
@@ -276,7 +309,10 @@ def evaluate_heldout(case_dir: str, project_dir: str,
         "width": int(target.shape[1]), "height": int(target.shape[0]),
         "azimuth_deg": azimuth,
         "base_object_rotation_deg": _base_rotation(plan),
+        "camera_type": framing["camera_type"],
         "ortho_scale": framing["ortho_scale"],
+        "lens_mm": framing["lens_mm"],
+        "sensor_width_mm": framing["sensor_width_mm"],
         "camera_location": framing["camera_location"],
         "output_path": str(output_path),
         "reference_glb": str(reference_copy),
@@ -299,7 +335,11 @@ def evaluate_heldout(case_dir: str, project_dir: str,
         "project_dir": str(project),
         "heldout_view": heldout_view,
         "heldout_relative_azimuth_deg": azimuth,
-        "camera_policy": "primary scale/offset fixed; held-out azimuth exact",
+        "camera_policy": (
+            "primary exact intrinsics and bbox-derived scale/offset; "
+            "held-out azimuth exact; no held-out alignment"
+            if framing["camera_type"] == "PERSP" else
+            "primary orthographic scale/offset fixed; held-out azimuth exact"),
         "heldout_silhouette_iou": validation._iou(target, rendered),
         "heldout_contour_chamfer_distance": validation._chamfer(target, rendered),
         "target_mask": str(target_path),

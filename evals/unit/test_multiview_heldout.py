@@ -13,8 +13,26 @@ def test_fixed_camera_uses_primary_bbox_only():
         backend="test", bbox=(50, 25, 150, 125), coverage=0.25,
         selection_source=EvidenceSource.DIRECTLY_OBSERVED)
     framing = fixed_camera_from_primary(seg, (200, 200))
+    assert framing["camera_type"] == "ORTHO"
     assert framing["ortho_scale"] == 2.0
     assert framing["camera_location"] == [0.0, -0.25, 2.0]
+
+
+def test_fixed_perspective_camera_uses_primary_intrinsics_and_bbox_only():
+    seg = SegmentationResult(
+        mask_path="m", rgba_path="r", original_path="i", confidence=1.0,
+        backend="test", bbox=(50, 25, 150, 125), coverage=0.25,
+        selection_source=EvidenceSource.DIRECTLY_OBSERVED)
+    framing = fixed_camera_from_primary(seg, (200, 200), {
+        "focal_length_px": 400.0,
+        "lens_mm": 50.0,
+        "sensor_width_mm": 36.0,
+    })
+    assert framing["camera_type"] == "PERSP"
+    assert framing["ortho_scale"] is None
+    assert framing["lens_mm"] == 50.0
+    assert framing["sensor_width_mm"] == 36.0
+    assert framing["camera_location"] == [0.0, -0.25, 4.0]
 
 
 def test_surface_alignment_removes_similarity_and_axis_rotation():

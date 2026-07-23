@@ -7,34 +7,35 @@ Date: 2026-07-23
 This evaluation reconstructs all 18 benchmark objects from the primary view
 and the calibrated `+45°` view. The `+90°` image and mask are held out until
 after reconstruction.
-The final `.blend` is rendered at exactly `+90°` with camera scale and offset
-fixed from the primary image; the evaluator does not search pose, scale, or
+The final `.blend` is rendered at exactly `+90°` with the primary camera's
+exact focal length and sensor width. Camera distance and offset are derived
+only from the primary mask; the evaluator does not search pose, scale, or
 alignment against the held-out target.
 
 ## Result
 
 | Case | Primary IoU | Held-out `+90°` IoU | Chamfer | Risk |
 | --- | ---: | ---: | ---: | --- |
-| `bottle_01` | 0.944 | **0.941** | 0.079 | low |
-| `bottle_02` | 0.940 | **0.931** | 0.077 | low |
-| `box_01` | 0.961 | **0.908** | 0.102 | medium |
+| `bottle_01` | 0.944 | **0.869** | 0.079 | low |
+| `bottle_02` | 0.940 | **0.841** | 0.077 | low |
+| `box_01` | 0.961 | **0.796** | 0.102 | medium |
 | `bracket_01` | 0.943 | 0.435 | 0.054 | high |
-| `chair_01` | 0.897 | 0.348 | 0.066 | high |
-| `crate_01` | 0.925 | 0.473 | 0.072 | high |
-| `gear_01` | 0.947 | **0.936** | **0.049** | low |
-| `gear_02` | 0.945 | 0.125 | **0.039** | high (hull rejected) |
-| `knob_01` | 0.751 | 0.486 | 0.087 | low |
-| `lamp_01` | 0.507 | 0.168 | 0.056 | high (hull rejected) |
-| `mug_01` | 0.944 | **0.833** | 0.093 | medium |
-| `mug_02` | 0.945 | 0.737 | 0.092 | medium |
-| `pipe_elbow_01` | 0.907 | 0.693 | 0.076 | high |
-| `sign_01` | 0.936 | 0.157 | **0.044** | high (hull rejected) |
-| `table_01` | 0.900 | 0.293 | 0.064 | high |
-| `vase_01` | 0.936 | **0.927** | 0.086 | low |
-| `wheel_01` | 0.681 | **0.817** | 0.067 | low |
-| `wheel_02` | 0.730 | 0.706 | 0.078 | low |
+| `chair_01` | 0.897 | 0.332 | 0.066 | high |
+| `crate_01` | 0.925 | 0.452 | 0.072 | high |
+| `gear_01` | 0.947 | **0.754** | **0.049** | low |
+| `gear_02` | 0.945 | 0.162 | **0.039** | high (hull rejected) |
+| `knob_01` | 0.751 | 0.471 | 0.087 | low |
+| `lamp_01` | 0.507 | 0.151 | 0.056 | high (hull rejected) |
+| `mug_01` | 0.944 | **0.760** | 0.093 | medium |
+| `mug_02` | 0.945 | 0.711 | 0.092 | medium |
+| `pipe_elbow_01` | 0.907 | 0.652 | 0.076 | high |
+| `sign_01` | 0.936 | 0.166 | **0.044** | high (hull rejected) |
+| `table_01` | 0.900 | 0.292 | 0.064 | high |
+| `vase_01` | 0.936 | **0.841** | 0.086 | low |
+| `wheel_01` | 0.681 | **0.864** | 0.067 | low |
+| `wheel_02` | 0.730 | 0.686 | 0.078 | low |
 
-Median held-out silhouette IoU is **0.699**, below Eval 20's `≥ 0.75`
+Median held-out silhouette IoU is **0.669**, below Eval 20's `≥ 0.75`
 target; 7/18 individual cases pass. Median normalized surface Chamfer is
 **0.074**, above the `≤ 0.05` target; 3/18 pass that metric and only
 `gear_01` passes both measured targets. The earlier six-family discovery
@@ -86,12 +87,14 @@ overwritten. Hidden completion confidence is capped below 0.5.
 ## Ablation
 
 The maximal two-view visual hull is underconstrained along the unseen
-direction. With semantic completion disabled, held-out IoUs for
+direction. In the earlier orthographic-framing diagnostic, with semantic
+completion disabled, held-out IoUs for
 box/bottle/gear/mug/chair/pipe are respectively
 `0.532 / 0.538 / 0.557 / 0.496 / 0.283 / 0.370`; median is **0.514**. With the
 source-labelled priors enabled, median rises to **0.875** (**+0.361**). Chair
 does not receive an unsupported prior and stays unchanged. Pipe improves to
-0.631 but remains below threshold.
+0.631 but remains below threshold. This ablation must be rerun under the
+exact-intrinsics evaluator before it can support a current Eval 20 claim.
 
 ## Reproduction
 
@@ -104,15 +107,16 @@ PYTHONPATH=. .venv/bin/python -m evals.benchmark.generate_benchmark \
   --workers 1
 
 PYTHONPATH=. .venv/bin/python -m recon3d.pipeline \
-  --image projects/multiview_benchmark/box_01/input.png \
-  --image projects/multiview_benchmark/box_01/views/view_001/input.png \
+  --image projects/multiview_benchmark_full/box_01/input.png \
+  --image projects/multiview_benchmark_full/box_01/views/view_001/input.png \
+  --mask projects/multiview_benchmark_full/box_01/mask.png \
   --label box \
   --view-azimuth 0 \
   --view-azimuth 45 \
   --out projects/multiview_box_visual_hull
 
 PYTHONPATH=. .venv/bin/python -m evals.multiview.run_multiview_eval \
-  --case projects/multiview_benchmark/box_01 \
+  --case projects/multiview_benchmark_full/box_01 \
   --project projects/multiview_box_visual_hull \
   --heldout-view view_002
 ```
