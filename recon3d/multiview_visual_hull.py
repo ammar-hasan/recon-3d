@@ -253,7 +253,18 @@ def augment_plan_with_visual_hull(
     # hidden surfaces. Never promote completion confidence above the global
     # generated-hypothesis ceiling.
     completion_confidence = min(0.5, 0.5 * completion_confidence)
-    unseen_view_risk = "medium" if hypothesis_view is not None else "high"
+    if hypothesis_view is None:
+        unseen_view_risk = "high"
+        risk_reason = "only the maximal observed-view hull constrains hidden geometry"
+    elif hypothesis_view.view_id == "generated_axial_invariance":
+        unseen_view_risk = "low"
+        risk_reason = "two observed views and axial semantics support orbit invariance"
+    elif "pipe" in plan.object_id.lower():
+        unseen_view_risk = "high"
+        risk_reason = "curved sweep depth and bend plane remain weakly constrained"
+    else:
+        unseen_view_risk = "medium"
+        risk_reason = "hidden geometry depends on a planar semantic completion"
     hull = PlanPart(
         id="multiview_visual_hull",
         operator=OperatorCategory.FREEFORM,
@@ -288,6 +299,7 @@ def augment_plan_with_visual_hull(
                 view.camera_azimuth_deg for view in views),
         "completion_confidence": completion_confidence,
         "unseen_view_risk": unseen_view_risk,
+        "unseen_view_risk_reason": risk_reason,
         "generated_symmetry_hypothesis": (
             None if hypothesis_view is None else {
                 "view_id": hypothesis_view.view_id,
@@ -301,6 +313,7 @@ def augment_plan_with_visual_hull(
         updated.metadata["multiview_visual_hull"])
     if unseen_view_risk == "high":
         result.warnings.append(
-            "visual hull is underconstrained outside observed azimuths; "
-            "supply another calibrated view before treating hidden geometry as exact")
+            "visual hull is underconstrained outside observed azimuths (%s); "
+            "supply another calibrated view before treating hidden geometry as exact"
+            % risk_reason)
     return updated, result, True

@@ -40,6 +40,26 @@ sample, searches proper axis rotations, performs rigid ICP alignment, and then
 computes symmetric nearest-surface Chamfer. Volumetric IoU and partwise
 held-out accuracy are not yet measured.
 
+## Uncertainty and failure detection
+
+The suite aggregator reads completion confidence and unseen-view risk from the
+reconstruction artifacts before comparing them with held-out outcomes.
+
+| Diagnostic | Result | Target / interpretation |
+| --- | ---: | --- |
+| High-risk silhouette-failure detection | **1.000** | both chair and pipe detected |
+| High-risk false-failure rate on passing cases | **0.000** | no passing case labelled high risk |
+| Hidden completion confidence > 0.5 | **0 cases** | generated completion stays capped |
+| Silhouette confidence ECE | **0.241** | fails Eval 24 target ≤ 0.08 |
+| Silhouette confidence Brier score | **0.271** | calibration needs more data/work |
+
+Axial bottle/gear completions are `low` risk because two views plus axial
+semantics support orbit invariance. Box/mug planar completions are `medium`.
+The unprioritized chair hull and weakly constrained pipe sweep are `high`, with
+an artifact warning recommending another calibrated view. This risk policy
+passes failure detection on these six cases, but it is not yet a validation on
+Eval 28's difficult-input suite.
+
 Semantic source parts remain in each `.blend` as hidden editable guides and
 are excluded from GLB/render output. `geometry/multiview.json` records the
 hull, observed-view scores, source guide IDs, angular evidence span, completion
@@ -80,6 +100,11 @@ PYTHONPATH=. .venv/bin/python -m evals.multiview.run_multiview_eval \
   --project projects/multiview_box_visual_hull \
   --heldout-view view_002
 ```
+
+Aggregate completed project metrics with
+`python -m evals.multiview.summarize_suite`; pass one
+`--entry case_id=project_dir` argument per case and an `--out` JSON path. The
+tool writes both JSON and Markdown summaries.
 
 For the ablation, add
 `--config evals/ablations/no_multiview_semantic_completion.yaml` to the

@@ -93,6 +93,7 @@ def test_calibrated_visual_hull_changes_render_geometry_but_keeps_guides(tmp_pat
     meta = updated.metadata["multiview_visual_hull"]
     assert meta["primary_observed_geometry_overwritten"] is False
     assert meta["unseen_view_risk"] == "medium"
+    assert "planar semantic" in meta["unseen_view_risk_reason"]
     assert meta["generated_symmetry_hypothesis"]["source"] == "semantic_prior"
     assert meta["generated_symmetry_hypothesis"]["camera_azimuth_deg"] == 90.0
     assert meta["observed_view_reprojection_iou"]["view_000"] >= 0.8
