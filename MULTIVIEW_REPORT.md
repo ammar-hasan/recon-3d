@@ -156,6 +156,24 @@ semantic prior has worse Chamfer. The priors therefore provide measurable
 silhouette value but are not yet accurate 3D completion; they cannot close
 Eval 20's surface target.
 
+### Rejected full-orbit axial completion
+
+Research on differentiable projection reconstruction supports combining
+silhouette measurements with an explicit shape prior rather than treating
+the maximal visual hull as a complete surface. A controlled `bottle_01`
+experiment therefore expanded the existing source-labelled axial-invariance
+prior from one generated `+90°` support to six generated supports covering the
+full calibrated orbit.
+
+The result improved held-out silhouette IoU from **0.897 to 0.917**, but
+worsened normalized surface Chamfer from **0.080 to 0.090** and surface-normal
+consistency from **0.604 to 0.352**. Repeating a perspective silhouette around
+the orbit made the outer support tighter without recovering the bottle's true
+surface structure. The experiment was rejected and the production path keeps
+the single generated support. This agrees with the broader finding that
+projection agreement needs a compact learned or parametric shape prior; more
+generated visual-hull cones alone are not such a prior.
+
 ### Visual hull versus parametric construction
 
 The `no_multiview_visual_hull` control now disables only the hull and keeps

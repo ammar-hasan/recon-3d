@@ -36,11 +36,55 @@ PYTHONPATH=. .venv/bin/python -m evals.human.score_packet \
   --out projects/human_eval29_svg/results.json
 ```
 
+## Direct image-to-mesh baseline
+
+The official TripoSR implementation is now integrated as an isolated,
+provenance-recorded baseline. A complete 18-case 256³ GLB set was generated
+locally from each primary benchmark image plus its reference foreground mask.
+The mask policy isolates 3D reconstruction quality from segmentation quality.
+Model settings, source revision, input hashes, runtime, and mesh size are
+recorded per case.
+
+Using the same 3,000-point, similarity-normalized surface evaluator as Eval 20,
+TripoSR has median Chamfer **0.0823**, 2/18 cases at or below 0.05, and median
+normal consistency **0.4569**. The calibrated structured pipeline measures
+0.0724, 3/18, and 0.5777, with lower Chamfer on 15/18 cases. This geometry
+comparison is not input-matched: TripoSR is single-view, while the calibrated
+pipeline uses the primary and `+45°` views.
+
+An additional input-matched, blind 18-case GLB packet was generated locally
+from the single-view `e2e_final` pipeline meshes and the TripoSR meshes:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m evals.human.build_packet \
+  --dataset projects/multiview_benchmark_full \
+  --method pipeline=projects/e2e_final/{case_id}/blender/model.glb \
+  --method triposr=projects/triposr_baseline_full/{case_id}/mesh.glb \
+  --out projects/human_eval29_triposr
+```
+
+Reproduce baseline generation and objective scoring:
+
+```bash
+projects/external_baselines/TripoSR/.baseline-venv/bin/python \
+  evals/baselines/run_triposr.py \
+  --triposr-root projects/external_baselines/TripoSR \
+  --dataset projects/multiview_benchmark_full \
+  --out projects/triposr_baseline_full \
+  --mc-resolution 256
+
+PYTHONPATH=. .venv/bin/python -m evals.baselines.evaluate_suite \
+  --dataset projects/multiview_benchmark_full \
+  --baseline projects/triposr_baseline_full \
+  --out projects/triposr_baseline_full_eval
+```
+
 ## Current status
 
 No human ratings have been collected, so none of Eval 29's median-score or 65%
-preference targets is claimed. Direct image-to-mesh and one-shot Blender-agent
-assets are also not present in the workspace; the same packet builder accepts
-those methods as soon as their per-case renders exist. Human recruitment and
-third-party baseline generation are external work, not measurements an
-automated repository run can fabricate.
+preference targets is claimed. Direct image-to-mesh GLBs are now present in the
+local ignored workspace and an input-matched blind GLB packet is ready. Matched
+comparison renders and one-shot Blender-agent assets are not yet present. The
+same packet builder accepts those methods as soon as matched per-case assets
+exist. Human recruitment remains external work that an automated repository
+run cannot fabricate.

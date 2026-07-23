@@ -23,7 +23,9 @@ The current automated MVP result is **18/18 benchmark hard-gate passes** with
 mean silhouette IoU 0.910. See [the final benchmark report](BENCHMARK_REPORT.md)
 and [current status](STATUS.md) for reproducible commands and scope limits.
 The staged ablation controls and their current verification state are in
-[the ablation report](ABLATION_REPORT.md).
+[the ablation report](ABLATION_REPORT.md). Primary-source geometry,
+calibration, and direct image-to-mesh baseline decisions are in
+[the research follow-up](RESEARCH_REPORT.md).
 
 It does not jump directly from an image to one opaque mesh. Instead, it builds understanding step by step:
 

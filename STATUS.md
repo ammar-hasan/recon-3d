@@ -1,6 +1,6 @@
 # STATUS — Image-to-Editable-3D Reconstruction Pipeline
 
-Last updated: 2026-07-23 after the full-camera 18-case multiview evaluation.
+Last updated: 2026-07-24 after the direct image-to-mesh baseline evaluation.
 
 ## Current outcome
 
@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **287 passed, 1 skipped**, including real Blender build,
+- Regression suite: **292 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Full-camera perspective carving is implemented and measured across all 18
   calibrated cases. Median held-out IoU improves from **0.669** to **0.723**
@@ -42,9 +42,12 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
   source-labelled semantic class priors; both meet their targets. Median color
   Delta E76 remains **22.795** because observed base color is not overwritten.
 - Eval 29 blind packet generation and scoring are implemented, and an 18-case
-  pipeline-versus-SVG packet was generated locally. Human ratings and opaque
-  direct-image-to-mesh / one-shot-agent assets are external and remain
-  unmeasured; no preference target is claimed.
+  pipeline-versus-SVG packet was generated locally. An official 18-case
+  TripoSR direct-image-to-mesh run now measures median surface Chamfer 0.0823
+  and normal consistency 0.4569, versus 0.0724 and 0.5777 for the calibrated
+  structured pipeline. An input-matched single-view pipeline-versus-TripoSR
+  blind GLB packet is ready. Human ratings, matched comparison renders, and
+  one-shot-agent assets remain open; no preference target is claimed.
 - Automated Eval 30 subset: **7/7** editing, variant, articulation, and GLB
   tasks complete; every edited `.blend` reopens, every GLB passes structural
   validation, and no manual fixes or broken dependencies were recorded.
@@ -130,7 +133,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `287 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `292 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
@@ -143,6 +146,8 @@ Perceptual render evidence is in [`PERCEPTUAL_REPORT.md`](PERCEPTUAL_REPORT.md).
 Material evidence is in [`MATERIAL_REPORT.md`](MATERIAL_REPORT.md).
 The blind human-evaluation protocol is in
 [`HUMAN_EVAL_REPORT.md`](HUMAN_EVAL_REPORT.md).
+The primary-source research decisions and external baseline setup are in
+[`RESEARCH_REPORT.md`](RESEARCH_REPORT.md).
 
 ## Additional ablation evidence
 
@@ -178,9 +183,10 @@ block the full `GOAL.md` success definition:
    pipeline's preferred refinement target is 0.90 even though every MVP hard
    gate passes.
 5. The 11-way matrix is complete for `box_01`, `bottle_01`, and `gear_01`, but
-   broader geometrically sensitive coverage is still required;
-   opaque image-to-mesh/VLM baselines, human quality evaluation, runtime engine
-   import and known-scale manufacturing validation from
+   broader geometrically sensitive coverage is still required. The first
+   image-to-mesh baseline is now measured, but a one-shot VLM baseline, human
+   quality evaluation, runtime engine import, and known-scale manufacturing
+   validation from
    `EVAL.md` remain research evaluation work. Eval 28 now passes its controlled
    suite, but natural-image semantic-hazard detection is not yet established.
 
