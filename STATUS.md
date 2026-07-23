@@ -1,6 +1,6 @@
 # STATUS — Image-to-Editable-3D Reconstruction Pipeline
 
-Last updated: 2026-07-23 after calibrated multiview held-out evaluation.
+Last updated: 2026-07-23 after the full-camera 18-case multiview evaluation.
 
 ## Current outcome
 
@@ -18,20 +18,15 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Safety violations: **0**.
 - Regression suite: **279 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
-- Calibrated two-evidence-view `box_01`: primary IoU **0.961** and genuinely
-  held-out `+90°` IoU **0.796** with exact primary intrinsics (target ≥ 0.75).
-- Full 18-case calibrated suite: median held-out IoU **0.669**, below Eval 20's
-  silhouette target ≥ 0.75; 7/18 individual cases pass.
-- Optional full-camera perspective carving is now implemented and measured on
-  a matched six-family subset: median held-out IoU improves from **0.757** to
-  **0.903**, median Chamfer remains **0.077**, and rejected exact hulls safely
-  fall back to the supplied azimuth model. The broader 18-case rerun remains
-  open, so this subset does not supersede the full-suite result.
-- The same suite's median normalized surface Chamfer is **0.074**, above Eval
-  20's ≤ 0.05 target; 3/18 pass Chamfer and only `gear_01` passes both
-  measured targets.
-- High operational risk detects 8/11 held-out silhouette failures with no
-  high-risk false alarms. Deterministic out-of-fold confidence ECE is **0.203**,
+- Full-camera perspective carving is implemented and measured across all 18
+  calibrated cases. Median held-out IoU improves from **0.669** to **0.723**
+  and passes rise from 7/18 to 8/18, but Eval 20's ≥ 0.75 median target remains
+  open. Rejected exact hulls safely fall back to the supplied azimuth model.
+- The full-camera suite's median normalized surface Chamfer improves from
+  **0.074** to **0.072**, above Eval 20's ≤ 0.05 target; 3/18 pass Chamfer and
+  only `gear_01` passes both measured targets.
+- High operational risk detects 8/10 held-out silhouette failures with no
+  high-risk false alarms. Deterministic out-of-fold confidence ECE is **0.169**,
   so Eval 24's ≤ 0.08 target remains open.
 - Dedicated Eval 28 suite: **10/10** difficult inputs detected, **0/20** easy
   controls falsely rejected, 100% graceful partial artifacts, and zero
@@ -123,7 +118,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `274 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `279 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
@@ -154,8 +149,8 @@ block the full `GOAL.md` success definition:
 1. The 18-case benchmark is synthetic and uses a supplied mask and label for
    the reconstruction path. Unguided segmentation is scored where available,
    but real-photo coverage remains limited.
-2. Calibrated multiview ground truth and exact held-out views now cover all 18
-   benchmark objects, but the suite misses both Eval 20 median targets.
+2. Full camera calibration and exact held-out views now cover all 18 benchmark
+   objects, but the improved suite still misses both Eval 20 median targets.
 3. Mean camera score is 0.500 because single-view focal length/physical scale
    remain weakly observable; the system reports that uncertainty rather than
    inventing calibration. An absolute-orbit experiment was rejected because

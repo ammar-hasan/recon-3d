@@ -12,7 +12,7 @@ exact focal length and sensor width. Camera distance and offset are derived
 only from the primary mask; the evaluator does not search pose, scale, or
 alignment against the held-out target.
 
-## Result
+## Azimuth-only baseline
 
 | Case | Primary IoU | Held-out `+90°` IoU | Chamfer | Risk |
 | --- | ---: | ---: | ---: | --- |
@@ -56,24 +56,44 @@ Generated completion views continue the observed calibrated orbit but remain
 labelled semantic hypotheses. The held-out evaluator applies the same frame
 transform to the unused target camera. No held-out mask is used for alignment.
 
-A matched six-family check compares this path with the preceding azimuth-only
-results under the same reconstruction and scoring settings:
+A matched full 18-case rerun compares this path with the preceding
+azimuth-only results under the same reconstruction and scoring settings:
 
 | Case | Azimuth-only IoU | Full-camera IoU | Azimuth-only Chamfer | Full-camera Chamfer |
 | --- | ---: | ---: | ---: | ---: |
-| `box_01` | 0.796 | **0.931** | 0.102 | **0.094** |
 | `bottle_01` | 0.869 | **0.897** | **0.079** | 0.080 |
-| `gear_01` | 0.754 | **0.910** | **0.049** | **0.049** |
-| `mug_01` | 0.760 | **0.916** | 0.093 | **0.090** |
+| `bottle_02` | 0.841 | **0.876** | **0.077** | 0.079 |
+| `box_01` | 0.796 | **0.931** | 0.102 | **0.094** |
+| `bracket_01` | **0.435** | 0.422 | **0.054** | 0.055 |
 | `chair_01` | 0.332 | 0.332 | 0.066 | 0.066 |
+| `crate_01` | 0.452 | **0.524** | 0.072 | **0.070** |
+| `gear_01` | 0.754 | **0.910** | **0.049** | **0.049** |
+| `gear_02` | 0.162 | 0.162 | **0.039** | **0.039** |
+| `knob_01` | 0.471 | **0.890** | 0.087 | **0.080** |
+| `lamp_01` | 0.151 | 0.151 | 0.056 | 0.056 |
+| `mug_01` | 0.760 | **0.916** | 0.093 | **0.090** |
+| `mug_02` | 0.711 | **0.717** | 0.092 | **0.084** |
 | `pipe_elbow_01` | 0.652 | **0.730** | 0.076 | **0.075** |
+| `sign_01` | 0.166 | 0.166 | **0.044** | **0.044** |
+| `table_01` | 0.292 | 0.292 | 0.064 | 0.064 |
+| `vase_01` | 0.841 | **0.903** | 0.086 | **0.084** |
+| `wheel_01` | **0.864** | 0.778 | 0.067 | **0.065** |
+| `wheel_02` | **0.686** | 0.663 | **0.078** | 0.079 |
 
-Median held-out IoU rises from **0.757** to **0.903**. Median normalized
-surface Chamfer remains **0.077**. Four of six cases pass IoU ≥ 0.75 and
-`gear_01` passes both measured thresholds. Chair's exact hull missed the
-primary reprojection gate (0.790 versus 0.800), so the recorded azimuth-only
-fallback preserved its prior result. These six cases validate the new camera
-path but do not replace the broader 18-case result above.
+Median held-out IoU rises from **0.669** to **0.723** and IoU passes increase
+from 7/18 to 8/18. Median normalized surface Chamfer improves from **0.074**
+to **0.072**; 3/18 pass Chamfer and `gear_01` remains the only case passing
+both measured thresholds. The exact-camera suite therefore improves both
+aggregate metrics but still misses Eval 20's 0.75/0.05 median targets.
+
+Chair's exact hull missed the primary reprojection gate (0.790 versus 0.800),
+so the recorded azimuth-only fallback preserved its prior result. Gear 02,
+lamp, sign, and table likewise preserve rejected-hull behavior. A matched
+wheel ablation disabled semantic completion: IoU fell from 0.778 to 0.609 on
+`wheel_01` and from 0.663 to 0.463 on `wheel_02`, while Chamfer improved from
+0.065 to 0.058 and 0.079 to 0.072 respectively. The prior is retained because
+it remains the better silhouette/surface tradeoff, but both full-camera wheel
+regressions are reported above.
 
 ## Uncertainty and failure detection
 
@@ -82,27 +102,27 @@ reconstruction artifacts before comparing them with held-out outcomes.
 
 | Diagnostic | Result | Target / interpretation |
 | --- | ---: | --- |
-| High-risk silhouette-failure detection | **0.727** | 8/11 failures detected; target 0.90 not met |
+| High-risk silhouette-failure detection | **0.800** | 8/10 failures detected; target 0.90 not met |
 | High-risk false-failure rate on passing cases | **0.000** | no passing case labelled high risk |
 | Hidden completion confidence > 0.5 | **0 cases** | generated completion stays capped |
-| Stratified out-of-fold silhouette ECE | **0.203** | fails Eval 24 target ≤ 0.08 |
-| Stratified out-of-fold Brier / ROC AUC | **0.157 / 0.818** | useful ranking, poor probability calibration |
-| Strict hash-split external-test ECE | **0.441** | 12 calibration / 6 test objects; prevalence shifted |
+| Stratified out-of-fold silhouette ECE | **0.169** | fails Eval 24 target ≤ 0.08 |
+| Stratified out-of-fold Brier / ROC AUC | **0.136 / 0.875** | useful ranking, poor probability calibration |
+| Medium-or-high failure detection | **0.900** | reaches detection target with 0.250 false-failure rate |
 
 Axial completions are `low` risk, planar completions are normally `medium`, and
 unprioritized hulls are `high`. A rejected calibrated hull is now treated as
 high operational risk because its artifact already warns that observed-view
-reprojection is inadequate. This catches gear_02, lamp, and sign failures in
-addition to the explicitly underconstrained hulls, but knob, mug_02, and
-wheel_02 remain missed. This is still not Eval 28's dedicated difficult-input
-suite.
+reprojection is inadequate. The exact-camera suite's high-risk label catches
+eight of ten failures without flagging a passing case, but medium-risk
+`mug_02` and low-risk `wheel_02` remain missed. This is still not Eval 28's
+dedicated difficult-input suite.
 
 The earlier report's ECE of 0.241 was invalid: it treated
 `completion_confidence` (confidence in hidden surfaces, deliberately capped at
 0.5) as the probability that held-out silhouette would pass. The aggregator
 now keeps that field only for hidden-geometry overconfidence. Silhouette ECE is
 `not_measured` unless a serialized calibrator trained on a separate cohort is
-provided. The reported 0.203 value is deterministic three-fold out-of-fold
+provided. The reported 0.169 value is deterministic three-fold out-of-fold
 evidence from primary-view IoU and operational risk; every prediction excludes
 its case from training. It fails the target and is not presented as calibrated.
 
