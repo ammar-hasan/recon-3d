@@ -28,9 +28,9 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - High operational risk detects 8/11 held-out silhouette failures with no
   high-risk false alarms. Deterministic out-of-fold confidence ECE is **0.203**,
   so Eval 24's ≤ 0.08 target remains open.
-- The earlier orthographic two-view semantic-completion ablation showed a
-  +0.361 median IoU gain, but requires exact-intrinsics rerunning before it is
-  accepted as current Eval 20 evidence.
+- Exact-intrinsics semantic-completion ablation: six-family median held-out IoU
+  improves from 0.485 to 0.757 (**+0.272**), but surface Chamfer worsens on
+  every case receiving a prior.
 
 The reproducible results and per-case table are in
 [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md). Generated projects and raw result

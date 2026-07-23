@@ -87,14 +87,25 @@ overwritten. Hidden completion confidence is capped below 0.5.
 ## Ablation
 
 The maximal two-view visual hull is underconstrained along the unseen
-direction. In the earlier orthographic-framing diagnostic, with semantic
-completion disabled, held-out IoUs for
-box/bottle/gear/mug/chair/pipe are respectively
-`0.532 / 0.538 / 0.557 / 0.496 / 0.283 / 0.370`; median is **0.514**. With the
-source-labelled priors enabled, median rises to **0.875** (**+0.361**). Chair
-does not receive an unsupported prior and stays unchanged. Pipe improves to
-0.631 but remains below threshold. This ablation must be rerun under the
-exact-intrinsics evaluator before it can support a current Eval 20 claim.
+direction. A fresh matched run disables semantic completion while retaining
+the same primary and `+45°` observations, current code, exact-intrinsics
+evaluator, and surface scorer.
+
+| Case | Full IoU | No semantic completion | IoU gain | Full Chamfer | Ablated Chamfer |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `box_01` | 0.796 | 0.477 | **+0.319** | 0.102 | 0.087 |
+| `bottle_01` | 0.869 | 0.514 | **+0.354** | 0.079 | 0.072 |
+| `gear_01` | 0.754 | 0.514 | **+0.241** | 0.049 | 0.047 |
+| `mug_01` | 0.760 | 0.494 | **+0.266** | 0.093 | 0.083 |
+| `chair_01` | 0.332 | 0.332 | 0.000 | 0.066 | 0.066 |
+| `pipe_elbow_01` | 0.652 | 0.367 | **+0.285** | 0.076 | 0.058 |
+
+Median held-out IoU rises from **0.485** to **0.757** (**+0.272**) and 5/6
+cases improve. Chair receives no unsupported completion and remains unchanged.
+The surface result moves in the opposite direction: every case receiving a
+semantic prior has worse Chamfer. The priors therefore provide measurable
+silhouette value but are not yet accurate 3D completion; they cannot close
+Eval 20's surface target.
 
 ## Reproduction
 
