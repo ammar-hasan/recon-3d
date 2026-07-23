@@ -1,0 +1,5 @@
+cleanup:
+  min_path_area_norm: 0.0
+  dedupe_distance_norm: 0.0
+  simplify_tolerance_norm: 0.0
+  smooth: false

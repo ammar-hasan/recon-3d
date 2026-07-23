@@ -44,6 +44,7 @@ class CleanupConfig(BaseModel):
 
 
 class PrimitiveConfig(BaseModel):
+    enabled: bool = True
     max_fit_error_norm: float = 0.01      # above this keep fallback curve
     min_arc_coverage: float = 0.15        # fraction of full circle to accept arc
     ransac_iterations: int = 200
@@ -51,6 +52,7 @@ class PrimitiveConfig(BaseModel):
 
 
 class CameraConfig(BaseModel):
+    enabled: bool = True
     default_focal_px: float = 1200.0      # for 1024 canvas, ~50mm-ish
     assume_projection: str = "auto"       # auto|perspective|orthographic
 
@@ -70,6 +72,7 @@ class BlenderConfig(BaseModel):
 
 
 class RefinementConfig(BaseModel):
+    enabled: bool = True
     max_iterations: int = 6
     target_silhouette_iou: float = 0.90
     min_iou_gain: float = 0.003           # stop when improvement below this
@@ -104,6 +107,14 @@ class HypothesisConfig(BaseModel):
     max_confidence: float = Field(default=0.5, ge=0.0, le=0.5)
 
 
+class ConstraintConfig(BaseModel):
+    enabled: bool = True
+
+
+class SemanticConfig(BaseModel):
+    enabled: bool = True
+
+
 class PipelineConfig(BaseModel):
     segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
     crop: CropConfig = Field(default_factory=CropConfig)
@@ -111,6 +122,8 @@ class PipelineConfig(BaseModel):
     vectorize: VectorizeConfig = Field(default_factory=VectorizeConfig)
     cleanup: CleanupConfig = Field(default_factory=CleanupConfig)
     primitives: PrimitiveConfig = Field(default_factory=PrimitiveConfig)
+    constraints: ConstraintConfig = Field(default_factory=ConstraintConfig)
+    semantics: SemanticConfig = Field(default_factory=SemanticConfig)
     camera: CameraConfig = Field(default_factory=CameraConfig)
     depth: DepthConfig = Field(default_factory=DepthConfig)
     blender: BlenderConfig = Field(default_factory=BlenderConfig)

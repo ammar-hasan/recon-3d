@@ -130,21 +130,26 @@ def _case_label(case: Dict[str, Any]) -> Optional[str]:
 
 
 def _pipeline_command(case: Dict[str, Any], project_dir: Path, use_mask: bool,
-                      python: str, label: Optional[str] = None) -> List[str]:
+                      python: str, label: Optional[str] = None,
+                      config: Optional[str] = None) -> List[str]:
     cmd = [python, "-m", "recon3d.pipeline",
            "--image", str(case["input_png"]), "--out", str(project_dir)]
     if use_mask and case["mask"] is not None:
         cmd += ["--mask", str(case["dir"] / "mask.png")]
         if label:
             cmd += ["--label", label]
+    if config:
+        cmd += ["--config", config]
     return cmd
 
 
 def run_pipeline(case: Dict[str, Any], project_dir: Path, use_mask: bool,
                  python: str, timeout: int = 1800,
-                 label: Optional[str] = None) -> Dict[str, Any]:
+                 label: Optional[str] = None,
+                 config: Optional[str] = None) -> Dict[str, Any]:
     """Invoke the recon3d pipeline CLI; never raises."""
-    cmd = _pipeline_command(case, project_dir, use_mask, python, label=label)
+    cmd = _pipeline_command(
+        case, project_dir, use_mask, python, label=label, config=config)
     started = time.time()
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True,
@@ -1069,7 +1074,7 @@ def build_report(case: Dict[str, Any], project_dir: Path,
 
 def evaluate_case(case: Dict[str, Any], projects_root: Path, out_dir: Path,
                   python: str, blender: Optional[str], skip_pipeline: bool,
-                  timeout: int) -> Dict[str, Any]:
+                  timeout: int, config: Optional[str] = None) -> Dict[str, Any]:
     case_id = case["case_id"]
     project_dir = projects_root / case_id
     nomask_dir = projects_root / (case_id + "_nomask")
@@ -1078,11 +1083,11 @@ def evaluate_case(case: Dict[str, Any], projects_root: Path, out_dir: Path,
             project_dir.mkdir(parents=True, exist_ok=True)
             run_pipeline(case, project_dir, use_mask=True,
                          python=python, timeout=timeout,
-                         label=_case_label(case))
+                         label=_case_label(case), config=config)
             if case["meta"].get("difficulty") == "easy":
                 nomask_dir.mkdir(parents=True, exist_ok=True)
                 run_pipeline(case, nomask_dir, use_mask=False,
-                             python=python, timeout=timeout)
+                             python=python, timeout=timeout, config=config)
         report = build_report(case, project_dir, nomask_dir, blender)
         report["baseline_svg_extrusion"] = svg_extrusion_baseline(
             case, out_dir / "baseline" / case_id, blender)
@@ -1276,6 +1281,8 @@ def main(argv: Optional[List[str]] = None) -> int:
                     help="score existing project dirs without running the pipeline")
     ap.add_argument("--timeout", type=int, default=1800)
     ap.add_argument("--python", default=sys.executable)
+    ap.add_argument("--config", default=None,
+                    help="pipeline YAML config, including ablation configs")
     args = ap.parse_args(argv)
 
     dataset_dir = Path(args.dataset)
@@ -1298,7 +1305,8 @@ def main(argv: Optional[List[str]] = None) -> int:
         case = load_case(dataset_dir, cid)
         print("[%d/%d] %s ..." % (i + 1, len(case_ids), cid), flush=True)
         report = evaluate_case(case, projects_root, out_dir, args.python,
-                               blender, args.skip_pipeline, args.timeout)
+                               blender, args.skip_pipeline, args.timeout,
+                               config=args.config)
         fr = report.get("final_result", {})
         print("      -> %s score=%s blocking=%s"
               % ("PASS" if fr.get("passed_mvp") else "FAIL",

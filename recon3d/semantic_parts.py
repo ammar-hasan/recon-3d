@@ -1004,6 +1004,21 @@ def decompose_parts(graph: SketchGraph, crop_rgba_path: str, spec: InputSpec,
     """Group primitives into semantic parts.  Primitive geometry is never
     modified; only labels, hierarchy, appearance and inferred hypotheses are
     attached to the returned graph copy."""
+    if not cfg.semantics.enabled:
+        primitive_ids = [primitive.id for primitive in graph.primitives]
+        part = SemanticPart(
+            id="part_object_0", part_class="object",
+            primitive_ids=primitive_ids, confidence=0.3,
+            notes=["semantic part reasoning disabled by ablation; all traced "
+                   "geometry grouped into one anonymous object part"])
+        out = graph.model_copy(update={"parts": [part]})
+        out.stats = dict(out.stats)
+        out.stats.update({
+            "part_count": 1, "part_classes": ["object"],
+            "semantic_backend": "disabled_ablation",
+            "semantic_generated_constraints": 0,
+        })
+        return out
     image = None
     if crop_rgba_path and os.path.exists(crop_rgba_path):
         img = cv2.imread(crop_rgba_path, cv2.IMREAD_UNCHANGED)

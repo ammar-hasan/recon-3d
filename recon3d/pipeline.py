@@ -16,7 +16,8 @@ import uuid
 from pathlib import Path
 
 from .config import PipelineConfig, software_versions
-from .schemas import (InputSpec, RunManifest, SchemaIO, sha256_file)
+from .schemas import (InputSpec, RefinementLog, RunManifest, SchemaIO,
+                      sha256_file)
 
 
 def _ensure_dirs(project_dir: Path) -> None:
@@ -128,8 +129,14 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         # Stage 17-18: validation + refinement
         val = validation.validate_reconstruction(bman, plan, seg, crop_meta,
                                                  str(project_dir), cfg)
-        plan, bman, val, rlog = refinement.refine(plan, seg, crop_meta,
-                                                  str(project_dir), cfg)
+        if cfg.refinement.enabled:
+            plan, bman, val, rlog = refinement.refine(
+                plan, seg, crop_meta, str(project_dir), cfg)
+        else:
+            rlog = RefinementLog(
+                initial_metrics={"silhouette_iou": val.metrics.silhouette_iou},
+                final_metrics={"silhouette_iou": val.metrics.silhouette_iou},
+                converged=val.passed, iterations=0)
         SchemaIO.save_yaml(plan, project_dir / "geometry" / "construction_plan.yaml")
         SchemaIO.save_json(rlog, project_dir / "validation" / "refinement_log.json")
 

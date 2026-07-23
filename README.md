@@ -22,6 +22,8 @@ Recon3D is a modular system for turning one or more images of an object into an 
 The current automated MVP result is **18/18 benchmark hard-gate passes** with
 mean silhouette IoU 0.910. See [the final benchmark report](BENCHMARK_REPORT.md)
 and [current status](STATUS.md) for reproducible commands and scope limits.
+The staged ablation controls and their current verification state are in
+[the ablation report](ABLATION_REPORT.md).
 
 It does not jump directly from an image to one opaque mesh. Instead, it builds understanding step by step:
 

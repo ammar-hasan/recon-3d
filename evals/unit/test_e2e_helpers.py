@@ -10,13 +10,23 @@ import numpy as np
 import pytest
 
 from evals.e2e.glbcheck import validate_glb
-from evals.e2e.run_e2e import (_case_label, _labels_match, major_part_recall,
+from evals.e2e.run_e2e import (_case_label, _labels_match, _pipeline_command,
+                               major_part_recall,
                                rasterize_cleaned_paths,
                                rasterize_svg_silhouette, safety_scan,
                                score_blender, score_camera,
                                score_hypotheses, score_multiview,
                                score_vectorization)
 from evals import metrics as m
+
+
+def test_pipeline_command_forwards_ablation_config(tmp_path):
+    case = {"input_png": tmp_path / "input.png", "mask": tmp_path / "mask.png",
+            "dir": tmp_path}
+    command = _pipeline_command(
+        case, tmp_path / "project", True, "python", label="box",
+        config="evals/ablations/no_refinement.yaml")
+    assert command[-2:] == ["--config", "evals/ablations/no_refinement.yaml"]
 
 
 def _write_glb(path: Path, gltf: dict, magic=b"glTF", version=2,

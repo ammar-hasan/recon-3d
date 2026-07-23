@@ -19,6 +19,7 @@ import numpy as np
 
 from .config import PipelineConfig
 from .schemas import (
+    EvidenceSource,
     GeometricPrimitive,
     PrimitiveType,
     TraceLayer,
@@ -630,7 +631,17 @@ def fit_primitives(layers: List[TraceLayer], cfg: PipelineConfig) -> List[Geomet
     counters: Dict[Tuple[str, str], int] = {}
     for layer in layers:
         for path in layer.paths:
-            prim = _fit_single_path(path, cfg)
+            if cfg.primitives.enabled:
+                prim = _fit_single_path(path, cfg)
+            else:
+                ptype = (_CLOSED_FALLBACK if path.closed else _OPEN_FALLBACK)
+                points = [[float(x), float(y)] for x, y in path.points]
+                prim = GeometricPrimitive(
+                    id="pending", type=ptype, params={"points": points},
+                    fit_error=0.0, source_path=path.path_id,
+                    source_layer=path.source_layer, confidence=0.3,
+                    fallback_points=[tuple(point) for point in points],
+                    source=EvidenceSource.FITTED_FROM_OBSERVATION)
             key = (layer.name.value, prim.type.value)
             idx = counters.get(key, 0)
             counters[key] = idx + 1

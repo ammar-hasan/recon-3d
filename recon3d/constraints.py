@@ -710,6 +710,8 @@ def detect_constraints(primitives: List[GeometricPrimitive],
     are detected within a single trace layer only; concentric / radial /
     mirror structure is detected across the whole deduplicated set.
     """
+    if not cfg.constraints.enabled:
+        return []
     prims = list(primitives)
     centers: Dict[str, np.ndarray] = {}
     all_pts = []

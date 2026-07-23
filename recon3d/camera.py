@@ -245,6 +245,21 @@ def estimate_camera(
     spec: InputSpec,
     cfg: PipelineConfig,
 ) -> CameraEstimate:
+    if not cfg.camera.enabled:
+        return CameraEstimate(
+            projection=ProjectionType.PERSPECTIVE,
+            focal_length_px=EvidencedValue(
+                value=float(cfg.camera.default_focal_px), unit="px",
+                source=EvidenceSource.UNKNOWN, confidence=0.0,
+                note="camera estimation disabled; configured focal fallback"),
+            rotation_euler_deg=EvidencedValue(
+                value=[0.0, 0.0, 0.0], unit="deg",
+                source=EvidenceSource.UNKNOWN, confidence=0.0),
+            object_rotation_euler_deg=EvidencedValue(
+                value=[0.0, 0.0, 0.0], unit="deg",
+                source=EvidenceSource.UNKNOWN, confidence=0.0),
+            notes=["camera estimation disabled by ablation"],
+        )
     notes: List[str] = []
 
     projection, proj_conf = _decide_projection(graph, cfg, notes)
