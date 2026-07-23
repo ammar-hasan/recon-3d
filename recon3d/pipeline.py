@@ -25,9 +25,15 @@ def _ensure_dirs(project_dir: Path) -> None:
         (project_dir / sub).mkdir(parents=True, exist_ok=True)
 
 
+def _result_status(validation_passed: bool, input_quality_risk: str) -> str:
+    if validation_passed and input_quality_risk != "high":
+        return "success"
+    return "partial_success"
+
+
 def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
     from . import (blender_codegen, camera, constraints, construction_plan, crop,
-                   depth, hypotheses, input_manager, multiview,
+                   depth, hypotheses, input_manager, input_quality, multiview,
                    multiview_refinement, multiview_visual_hull, operators,
                    preprocess, primitives,
                    refinement, runner, segmentation, semantic_parts, sketch_graph,
@@ -45,14 +51,33 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
     )
     manifest.config = json.loads(cfg.model_dump_json())
 
+    quality = None
     try:
         # Stage 1-3: input, segmentation, crop
         bundle = input_manager.load_input(spec)
         manifest.input_hashes = {img.path: img.sha256 for img in bundle.images}
+        quality = input_quality.assess_input_quality(bundle)
+        quality_path = SchemaIO.save_json(
+            quality, project_dir / "input" / "quality_assessment.json")
+        manifest.stage_outputs["input_quality_assessment"] = quality_path
+        manifest.stage_outputs["input_quality_risk"] = quality.risk
         seg = segmentation.segment(bundle, str(project_dir / "segmentation"), cfg)
         SchemaIO.save_json(seg, project_dir / "segmentation" / "segmentation_result.json")
         crop_meta, crop_rgba, crop_mask = crop.make_crop(
             seg, str(project_dir / "segmentation"), cfg)
+        quality = input_quality.assess_input_quality(bundle, seg)
+        quality_path = SchemaIO.save_json(
+            quality, project_dir / "input" / "quality_assessment.json")
+        manifest.stage_outputs["input_quality_assessment"] = quality_path
+        manifest.stage_outputs["input_quality_risk"] = quality.risk
+        if quality.signals:
+            quality_warnings = [
+                "input quality %s: %s" % (signal.code, signal.evidence)
+                for signal in quality.signals]
+            seg = seg.model_copy(update={
+                "warnings": list(seg.warnings) + quality_warnings})
+            SchemaIO.save_json(
+                seg, project_dir / "segmentation" / "segmentation_result.json")
 
         # Stage 4-6: preprocess, vectorize, cleanup
         layers_img = preprocess.preprocess(crop_rgba, crop_mask,
@@ -160,7 +185,8 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         SchemaIO.save_yaml(plan, project_dir / "geometry" / "construction_plan.yaml")
         SchemaIO.save_json(rlog, project_dir / "validation" / "refinement_log.json")
 
-        manifest.status = "success" if val.passed else "partial_success"
+        manifest.status = _result_status(
+            val.passed, quality.risk if quality is not None else "high")
     except input_manager.InputError as exc:
         # Invalid or insufficient source evidence is an input outcome, not a
         # reconstruction failure.  Keep the partial project and a machine-
@@ -169,7 +195,9 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         manifest.stage_outputs["error"] = f"{type(exc).__name__}: {exc}"
         manifest.stage_outputs["unsupported_input_reason"] = str(exc)
     except Exception as exc:  # noqa: BLE001 - orchestrator must never crash silently
-        manifest.status = "failed_validation"
+        manifest.status = (
+            "partial_success" if quality is not None and quality.risk == "high"
+            else "failed_validation")
         manifest.stage_outputs["error"] = f"{type(exc).__name__}: {exc}"
         traceback.print_exc()
     finally:

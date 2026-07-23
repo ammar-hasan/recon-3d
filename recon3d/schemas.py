@@ -15,7 +15,7 @@ import enum
 import hashlib
 import json
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 import yaml
 from pydantic import BaseModel, Field
@@ -82,6 +82,22 @@ class InputBundle(BaseModel):
     spec: InputSpec
     images: List[LoadedImage]
     warnings: List[str] = []
+
+
+class InputQualitySignal(BaseModel):
+    code: str
+    severity: Literal["low", "medium", "high"]
+    evidence: str
+    recommendation: str
+    source: EvidenceSource = EvidenceSource.DIRECTLY_OBSERVED
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+
+
+class InputQualityAssessment(BaseModel):
+    risk: Literal["low", "medium", "high"] = "low"
+    unreliable_input_detected: bool = False
+    signals: List[InputQualitySignal] = []
+    recommendations: List[str] = []
 
 
 def sha256_file(path: str | Path) -> str:

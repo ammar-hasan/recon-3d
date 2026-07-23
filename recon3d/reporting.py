@@ -11,8 +11,9 @@ from pathlib import Path
 from typing import Optional
 
 from .schemas import (BlenderManifest, ConstructionPlan, HypothesisReport,
-                      MultiViewResult, RefinementLog, RunManifest, SchemaIO,
-                      SegmentationResult, SketchGraph, ValidationMetrics)
+                      InputQualityAssessment, MultiViewResult, RefinementLog,
+                      RunManifest, SchemaIO, SegmentationResult, SketchGraph,
+                      ValidationMetrics)
 
 
 def _yn(v: Optional[bool]) -> str:
@@ -61,6 +62,26 @@ def generate_report(project_dir: str | Path) -> str:
                 f"- reason: {reason}",
                 "- no reconstruction success is claimed",
             ]
+        lines.append("")
+
+    # --- input quality ----------------------------------------------------
+    quality_path = pdir / "input" / "quality_assessment.json"
+    if quality_path.exists():
+        quality = SchemaIO.load_json(InputQualityAssessment, quality_path)
+        lines += [
+            "## Input Quality",
+            "",
+            f"- operational risk: **{quality.risk}**",
+            f"- unreliable input detected: {_yn(quality.unreliable_input_detected)}",
+        ]
+        for signal in quality.signals:
+            lines.append(
+                f"- `{signal.code}` ({signal.severity}, conf "
+                f"{signal.confidence:.2f}): {signal.evidence}")
+        for recommendation in quality.recommendations:
+            lines.append(f"- recommended evidence: {recommendation}")
+        if quality.risk == "high":
+            lines.append("- no unqualified reconstruction success is claimed")
         lines.append("")
 
     # --- segmentation -----------------------------------------------------
