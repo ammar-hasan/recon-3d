@@ -6,6 +6,7 @@ validates optional box / point / mask hints.
 """
 from __future__ import annotations
 
+import math
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -120,7 +121,9 @@ def load_input(spec: InputSpec) -> InputBundle:
             "view_azimuths_deg must contain one angle per image "
             "(%d images, %d angles)" % (
                 len(spec.image_paths), len(spec.view_azimuths_deg)))
-
+    if (spec.view_azimuths_deg is not None
+            and not all(math.isfinite(v) for v in spec.view_azimuths_deg)):
+        raise InputError("view_azimuths_deg values must be finite")
     input_dir = Path(spec.output_dir) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
 

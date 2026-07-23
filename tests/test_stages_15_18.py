@@ -17,8 +17,8 @@ import pytest
 from recon3d import blender_codegen, refinement, runner, validation
 from recon3d.config import PipelineConfig
 from recon3d.schemas import (CameraEstimate, ConstructionPlan, CropMetadata,
-                             MaterialSpec, OperatorCategory, PlanPart,
-                             SegmentationResult)
+                             EvidenceSource, EvidencedValue, MaterialSpec,
+                             OperatorCategory, PlanPart, SegmentationResult)
 
 CANVAS = 512
 REF_RADIUS_PX = 190
@@ -156,6 +156,19 @@ def test_pose_hypothesis_is_evidence_tracked():
     assert plan.camera.object_rotation_euler_deg.value == [30.0, 0.0, 0.0]
     assert (plan.camera.object_rotation_euler_deg.source
             == refinement.EvidenceSource.ESTIMATED_FROM_CAMERA)
+
+
+def test_refinement_never_replaces_user_supplied_object_pose():
+    plan = ConstructionPlan(
+        object_id="calibrated",
+        parts=[PlanPart(id="body", operator=OperatorCategory.EXTRUDE,
+                        profile={"type": "polygon", "points": [],
+                                 "closed": True}, depth=0.1)],
+        camera=CameraEstimate(object_rotation_euler_deg=EvidencedValue(
+            value=[0.0, 43.0, 0.0], unit="deg",
+            source=EvidenceSource.USER_SUPPLIED, confidence=1.0)),
+    )
+    assert not refinement._pose_search_eligible(plan, 0.2)
 
 
 def test_refinement_prioritizes_visible_offset_and_skips_inapplicable_revolve():

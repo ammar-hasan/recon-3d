@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **263 passed, 1 skipped**, including real Blender build,
+- Regression suite: **265 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.961** and genuinely
   held-out `+90°` IoU **0.796** with exact primary intrinsics (target ≥ 0.75).
@@ -70,6 +70,11 @@ directories remain gitignored.
   held-out silhouette-pass probability, supports serialized external
   calibrators, and emits deterministic out-of-fold evidence without fitting on
   the case being scored.
+- Refinement now preserves confidence-1.0 user-supplied object pose instead of
+  silently replacing it with a lower-confidence silhouette hypothesis.
+- Held-out surface metrics are sampled in canonical object pose, independent
+  of the yaw used to render the held-out silhouette; visual-hull geometry also
+  ignores inapplicable parametric base rotations.
 - Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 - All eleven required stage ablations now have executable configs; smoke
   evidence and complete matched 11-way `box_01`, `bottle_01`, and `gear_01`
@@ -89,7 +94,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `263 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `265 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
@@ -120,7 +125,10 @@ block the full `GOAL.md` success definition:
    benchmark objects, but the suite misses both Eval 20 median targets.
 3. Mean camera score is 0.500 because single-view focal length/physical scale
    remain weakly observable; the system reports that uncertainty rather than
-   inventing calibration.
+   inventing calibration. An absolute-orbit experiment was rejected because
+   observed extrusion profiles are still camera-frame rather than canonical;
+   applying the orbit double-counted foreshortening and reduced `box_01`
+   primary IoU to 0.538.
 4. `pipe_elbow_01` passes narrowly at 0.80008. `chair_01`, `pipe_elbow_01`,
    and `table_01` retain internal `partial_success` status because the
    pipeline's preferred refinement target is 0.90 even though every MVP hard

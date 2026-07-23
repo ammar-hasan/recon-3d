@@ -257,6 +257,9 @@ def test_hint_validation(tmp_path):
     bundle = input_manager.load_input(spec)
     assert bundle.spec.view_azimuths_deg == [10.0, 55.0]
 
+    invalid = spec.model_copy(update={"view_azimuths_deg": [0.0, float("nan")]})
+    with pytest.raises(InputError, match="must be finite"):
+        input_manager.load_input(invalid)
 
 # ---------------------------------------------------------------------------
 # Stage 2: segmentation

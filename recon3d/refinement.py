@@ -235,6 +235,22 @@ def _rank_candidates(diag: Dict[str, float],
     return scored
 
 
+def _pose_search_eligible(plan: ConstructionPlan, silhouette_iou: float) -> bool:
+    """Return whether refinement may replace the current object pose.
+
+    Explicit calibration is an input constraint, not a hypothesis for the
+    single-view silhouette loop to overwrite. The loop may still tune scale,
+    framing, and inferred geometry around that fixed pose.
+    """
+    pose = (plan.camera.object_rotation_euler_deg
+            if plan.camera is not None else None)
+    if pose is not None and pose.source == EvidenceSource.USER_SUPPLIED:
+        return False
+    op_names = [part.operator.value for part in plan.parts]
+    return (silhouette_iou < 0.60
+            and op_names.count("extrude") >= op_names.count("revolve"))
+
+
 # ---------------------------------------------------------------------------
 # artifact snapshot / restore (best-model rollback)
 # ---------------------------------------------------------------------------
@@ -349,9 +365,7 @@ def refine(plan: ConstructionPlan, seg: SegmentationResult,
     # stage unable to infer their out-of-plane pose. Before size/translation
     # tuning, render a bounded set of explicit tilt/spin hypotheses. Every
     # rejected pose rolls back and the initial model can never be made worse.
-    op_names = [p.operator.value for p in best_plan.parts]
-    pose_eligible = (best_iou < 0.60
-                     and op_names.count("extrude") >= op_names.count("revolve"))
+    pose_eligible = _pose_search_eligible(best_plan, best_iou)
     if pose_eligible:
         angles = [0.0, 15.0, -15.0, 30.0, -30.0, 45.0, -45.0]
         for axis, name in ((0, "object_rotation_x"),

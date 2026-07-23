@@ -2,9 +2,11 @@ from recon3d.schemas import EvidenceSource, SegmentationResult
 import numpy as np
 
 from evals.multiview.run_multiview_eval import (
+    _base_rotation,
     align_surface_metrics,
     fixed_camera_from_primary,
 )
+from recon3d.schemas import CameraEstimate, ConstructionPlan, EvidencedValue
 
 
 def test_fixed_camera_uses_primary_bbox_only():
@@ -33,6 +35,17 @@ def test_fixed_perspective_camera_uses_primary_intrinsics_and_bbox_only():
     assert framing["lens_mm"] == 50.0
     assert framing["sensor_width_mm"] == 36.0
     assert framing["camera_location"] == [0.0, -0.25, 4.0]
+
+
+def test_visual_hull_ignores_parametric_base_rotation():
+    plan = ConstructionPlan(
+        object_id="parametric",
+        camera=CameraEstimate(object_rotation_euler_deg=EvidencedValue(
+            value=[1.0, 45.0, 2.0], confidence=1.0)),
+    )
+    assert _base_rotation(plan) == [1.0, 45.0, 2.0]
+    plan.metadata = {"multiview_visual_hull": {"used": True}}
+    assert _base_rotation(plan) == [0.0, 0.0, 0.0]
 
 
 def test_surface_alignment_removes_similarity_and_axis_rotation():

@@ -91,6 +91,15 @@ try:
     scene.render.filepath = P["output_path"]
     bpy.ops.render.render(write_still=True)
 
+    # Surface quality is a property of the reconstructed shape, not of the
+    # camera-relative pose used for the held-out silhouette.  Sampling after
+    # the arbitrary held-out yaw makes ICP depend on that yaw (the discrete
+    # initialisations below only guarantee exact axis rotations).  Restore the
+    # canonical object frame before sampling so camera calibration cannot
+    # spuriously change Chamfer or normal consistency.
+    root.rotation_euler = (0.0, 0.0, 0.0)
+    bpy.context.view_layer.update()
+
     def sample_visible_meshes(objects, count, seed):
         triangles = []
         normals = []
@@ -195,6 +204,11 @@ def fixed_camera_from_primary(seg: SegmentationResult,
 
 
 def _base_rotation(plan: ConstructionPlan) -> list[float]:
+    # Visual-hull vertices are already expressed in the primary camera frame;
+    # parametric constructions retain their calibrated canonical-object pose.
+    hull = (plan.metadata or {}).get("multiview_visual_hull") or {}
+    if hull.get("used"):
+        return [0.0, 0.0, 0.0]
     if plan.camera is not None:
         value = plan.camera.object_rotation_euler_deg.value
         if isinstance(value, list) and len(value) == 3:

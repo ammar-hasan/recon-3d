@@ -131,6 +131,30 @@ preservation gate. The next geometry problem is therefore view-consistent
 pose/depth for the editable parametric construction, not simply more hull
 resolution.
 
+### Absolute-pose experiment and evidence guard
+
+An additional experiment supplied the benchmark's absolute primary-camera
+orbit to the parametric construction. It was rejected as a production
+feature: the current extruded profiles are traced in the primary camera frame,
+not canonical object coordinates, so rotating them by the absolute orbit
+double-applies foreshortening. On `box_01`, primary validation IoU fell to
+**0.538** even though the same pose could improve a held-out silhouette. This
+is not a legitimate geometry improvement; canonicalizing observed profiles is
+required before absolute object pose can be applied.
+
+The experiment exposed an independent provenance bug: render refinement could
+replace a confidence-1.0 `user_supplied` object pose with a lower-confidence
+silhouette hypothesis. Pose search now treats user-supplied calibration as an
+immutable input constraint while still allowing scale, framing, and inferred
+geometry refinement. Calibrated visual-hull geometry also ignores parametric
+base rotation because its vertices are already in the primary camera frame.
+
+Finally, held-out rendering now restores canonical object rotation before
+sampling surfaces. This makes Chamfer and normal consistency properties of
+shape rather than the arbitrary held-out render yaw. Re-evaluating the
+documented box/mug no-hull controls and full box case reproduced their prior
+metrics to rounding, so the reported ablation conclusions are unchanged.
+
 ## Reproduction
 
 ```bash
