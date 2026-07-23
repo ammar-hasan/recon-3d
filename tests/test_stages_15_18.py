@@ -310,6 +310,21 @@ def test_validate_reconstruction(built_project):
 
 
 @pytest.mark.blender
+def test_printable_stl_conversion_is_watertight(built_project, tmp_path):
+    from evals.downstream.run_print_tasks import run_case
+
+    result = run_case(
+        "wheel", built_project["project"] / "blender" / "scene.blend",
+        tmp_path / "printing", built_project["cfg"].blender.blender_bin, 0.01)
+    assert result["success"], result.get("errors")
+    assert result["non_manifold_edges"] == 0
+    assert result["boundary_edges"] == 0
+    assert result["minimum_thickness_pass"]
+    assert result["stl_reimport_non_manifold_edges"] == 0
+    assert Path(result["stl_path"]).stat().st_size > 84
+
+
+@pytest.mark.blender
 def test_refine_improves_and_terminates(tmp_path):
     # initial plan deliberately 15% too small -> refinement should scale up
     project = tmp_path / "refine_project"

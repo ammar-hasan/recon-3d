@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **273 passed, 1 skipped**, including real Blender build,
+- Regression suite: **274 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.961** and genuinely
   held-out `+90°` IoU **0.796** with exact primary intrinsics (target ≥ 0.75).
@@ -36,6 +36,10 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Automated Eval 30 subset: **7/7** editing, variant, articulation, and GLB
   tasks complete; every edited `.blend` reopens, every GLB passes structural
   validation, and no manual fixes or broken dependencies were recorded.
+- Controlled print-task subset: **3/3** box/bottle/gear assets convert to
+  watertight voxel meshes, pass a 0.030 normalized thickness probe, export to
+  STL, and re-import with zero non-manifold edges. Physical units remain
+  unknown, so this is not a millimetre manufacturing guarantee.
 - Eval 27 existing-cohort runtime: mean **89.0 s**, median **81.5 s**, and p90
   **148.3 s** across 18 cases. New prospective manifests add grouped monotonic
   timings and peak RSS; an instrumented smoke run used 441.3 MiB peak RSS.
@@ -114,7 +118,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `273 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `274 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
@@ -160,7 +164,7 @@ block the full `GOAL.md` success definition:
 5. The 11-way matrix is complete for `box_01`, `bottle_01`, and `gear_01`, but
    broader geometrically sensitive coverage is still required;
    opaque image-to-mesh/VLM baselines, human quality evaluation, runtime engine
-   import, and 3D-print task evaluation from
+   import and known-scale manufacturing validation from
    `EVAL.md` remain research evaluation work. Eval 28 now passes its controlled
    suite, but natural-image semantic-hazard detection is not yet established.
 

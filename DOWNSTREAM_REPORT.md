@@ -50,6 +50,35 @@ PYTHONPATH=. .venv/bin/python -m evals.downstream.run_edit_tasks \
 This closes automated editing, variant-generation, basic articulation, and
 structural game-export checks. The GLB check validates container structure,
 meshes, nodes, materials, and accessors; it is not an actual Unity/Unreal
-runtime import. 3D-printing tasks (watertight conversion, minimum thickness,
-and STL export) and human completion-time studies are not yet measured and are
-not claimed as passes.
+runtime import. Human completion-time studies are not yet measured.
+
+## Controlled 3D-print conversion
+
+Box, bottle, and gear reconstructions were joined and voxel-remeshed at 0.015
+normalized units, checked for manifold/boundary edges, probed inward for a
+minimum thickness of 0.030 normalized units, exported to STL, and re-imported.
+
+```yaml
+watertight_conversion_rate: 1.0
+minimum_thickness_pass_rate: 1.0
+stl_export_reimport_rate: 1.0
+task_completion_rate: 1.0
+median_elapsed_seconds: 0.73
+```
+
+The measured minimum ray thicknesses were 0.124 (box), 0.310 (bottle), and
+0.121 (gear), with zero non-manifold or boundary edges before export and after
+STL re-import. Reproduce with:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m evals.downstream.run_print_tasks \
+  --projects-root projects/e2e_final \
+  --out evals/results_printing \
+  --cases box_01,bottle_01,gear_01
+```
+
+This is a relative-geometry check. Most source reconstructions have unknown
+physical scale, so 0.030 normalized units cannot be presented as a millimetre
+manufacturing guarantee. Voxel remeshing also trades fine detail for
+watertightness; dimensional tolerance against a known-scale reference remains
+open.
