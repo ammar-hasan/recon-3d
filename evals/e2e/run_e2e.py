@@ -253,7 +253,8 @@ def blend_reopen_probe(blender: str, blend_path: Path,
             "material_count": int(m.group(3)),
             "meaningful_name_rate":
                 (len(names) - len(defaultish)) / max(1, len(names)),
-            "part_separation": int(m.group(1)) >= 2}
+            "part_separation": int(m.group(1)) >= 2,
+            "object_names": names}
 
 
 # ---------------------------------------------------------------------------

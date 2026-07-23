@@ -585,6 +585,10 @@ def main():
             "face_count": len(obj.data.polygons) if obj.type == 'MESH' else 0,
             "is_manifold": None,
             "pivot": [round(v, 6) for v in obj.matrix_world.translation],
+            "location": [round(float(v), 6) for v in obj.location],
+            "rotation_euler_deg": [round(math.degrees(float(v)), 6)
+                                   for v in obj.rotation_euler],
+            "scale": [round(float(v), 6) for v in obj.scale],
         }
         objects.append(info)
     return {

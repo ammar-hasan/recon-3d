@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **269 passed, 1 skipped**, including real Blender build,
+- Regression suite: **272 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.961** and genuinely
   held-out `+90°` IoU **0.796** with exact primary intrinsics (target ≥ 0.75).
@@ -33,6 +33,9 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
   misleading success claims. Semantic hazards such as mirrors and occlusion
   use explicit label/description evidence; real-photo generalization remains
   open.
+- Automated Eval 30 subset: **7/7** editing, variant, articulation, and GLB
+  tasks complete; every edited `.blend` reopens, every GLB passes structural
+  validation, and no manual fixes or broken dependencies were recorded.
 - Exact-intrinsics semantic-completion ablation: six-family median held-out IoU
   improves from 0.485 to 0.757 (**+0.272**), but surface Chamfer worsens on
   every case receiving a prior.
@@ -83,6 +86,9 @@ directories remain gitignored.
 - Input-quality preflight records structured, source-labelled hazards and
   evidence recommendations. High-risk inputs can return only
   `partial_success`, even when a technically valid model is produced.
+- Blender manifests now expose local location, Euler rotation, and scale so
+  downstream edits can be verified after a real rebuild instead of assumed
+  from plan changes.
 - Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 - All eleven required stage ablations now have executable configs; smoke
   evidence and complete matched 11-way `box_01`, `bottle_01`, and `gear_01`
@@ -102,11 +108,14 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `269 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `272 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
 are recorded in [`MULTIVIEW_REPORT.md`](MULTIVIEW_REPORT.md).
+Controlled failure detection and downstream edit-task evidence are in
+[`FAILURE_DETECTION_REPORT.md`](FAILURE_DETECTION_REPORT.md) and
+[`DOWNSTREAM_REPORT.md`](DOWNSTREAM_REPORT.md).
 
 ## Additional ablation evidence
 
@@ -143,7 +152,8 @@ block the full `GOAL.md` success definition:
    gate passes.
 5. The 11-way matrix is complete for `box_01`, `bottle_01`, and `gear_01`, but
    broader geometrically sensitive coverage is still required;
-   opaque image-to-mesh/VLM baselines and human edit-task evaluation from
+   opaque image-to-mesh/VLM baselines, human quality evaluation, runtime engine
+   import, and 3D-print task evaluation from
    `EVAL.md` remain research evaluation work. Eval 28 now passes its controlled
    suite, but natural-image semantic-hazard detection is not yet established.
 

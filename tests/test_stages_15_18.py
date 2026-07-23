@@ -280,6 +280,9 @@ def test_run_blender_builds_scene(built_project):
     assert by_name["tyre"].vertex_count > 0
     assert by_name["tyre"].face_count > 0
     assert by_name["tyre"].pivot is not None
+    assert by_name["tyre"].location is not None
+    assert by_name["tyre"].rotation_euler_deg is not None
+    assert by_name["tyre"].scale is not None
 
 
 @pytest.mark.blender

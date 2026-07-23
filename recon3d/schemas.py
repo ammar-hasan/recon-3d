@@ -482,6 +482,9 @@ class BlenderObjectInfo(BaseModel):
     face_count: int = 0
     is_manifold: Optional[bool] = None
     pivot: Optional[Tuple[float, float, float]] = None
+    location: Optional[Tuple[float, float, float]] = None
+    rotation_euler_deg: Optional[Tuple[float, float, float]] = None
+    scale: Optional[Tuple[float, float, float]] = None
 
 
 class BlenderManifest(BaseModel):
