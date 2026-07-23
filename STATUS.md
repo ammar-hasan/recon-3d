@@ -16,17 +16,18 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **257 passed, 1 skipped**, including real Blender build,
+- Regression suite: **261 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.962** and genuinely
   held-out `+90°` IoU **0.903** (target ≥ 0.75).
-- Six-family calibrated suite: median held-out IoU **0.875** (Eval 20
-  silhouette target ≥ 0.75), with 4/6 individual cases passing.
-- The same suite's median normalized surface Chamfer is **0.077**, so Eval
-  20's surface target (≤ 0.05) remains open; only `gear_01` passes it.
-- Semantic unseen-view risk detects both held-out silhouette failures with no
-  high-risk false alarms in this six-case suite. Confidence ECE is **0.241**,
-  so Eval 24 calibration (target ≤ 0.08) remains open.
+- Full 18-case calibrated suite: median held-out IoU **0.699**, below Eval 20's
+  silhouette target ≥ 0.75; 7/18 individual cases pass.
+- The same suite's median normalized surface Chamfer is **0.074**, above Eval
+  20's ≤ 0.05 target; 3/18 pass Chamfer and only `gear_01` passes both
+  measured targets.
+- High operational risk detects 8/11 held-out silhouette failures with no
+  high-risk false alarms. Deterministic out-of-fold confidence ECE is **0.203**,
+  so Eval 24's ≤ 0.08 target remains open.
 - Two-view maximal-hull ablation: held-out IoU **0.532**; the explicit
   source-labelled enclosure symmetry hypothesis contributes **+0.287 IoU**.
 
@@ -60,6 +61,10 @@ directories remain gitignored.
   `unsupported_input` outcome, retain a partial project, record a
   machine-readable reason, and explicitly avoid a reconstruction success claim
   in the report.
+- Multiview calibration now separates capped hidden-surface confidence from
+  held-out silhouette-pass probability, supports serialized external
+  calibrators, and emits deterministic out-of-fold evidence without fitting on
+  the case being scored.
 - Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 - All eleven required stage ablations now have executable configs; smoke
   evidence and complete matched 11-way `box_01`, `bottle_01`, and `gear_01`
@@ -79,7 +84,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `257 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `261 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
@@ -106,8 +111,8 @@ block the full `GOAL.md` success definition:
 1. The 18-case benchmark is synthetic and uses a supplied mask and label for
    the reconstruction path. Unguided segmentation is scored where available,
    but real-photo coverage remains limited.
-2. Calibrated multiview ground truth and a held-out view now exist for
-   `box_01`, but cross-family calibrated coverage is not yet established.
+2. Calibrated multiview ground truth and exact held-out views now cover all 18
+   benchmark objects, but the suite misses both Eval 20 median targets.
 3. Mean camera score is 0.500 because single-view focal length/physical scale
    remain weakly observable; the system reports that uncertainty rather than
    inventing calibration.

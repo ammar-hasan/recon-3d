@@ -37,4 +37,21 @@ def test_suite_aggregates_geometry_and_failure_detection(tmp_path):
     assert aggregate["failure_detection_high_only"]["failure_detection_rate"] == 1.0
     assert aggregate["failure_detection_high_only"][
         "false_failure_rate_on_passing_cases"] == 0.0
-    assert aggregate["silhouette_confidence_ece"] == pytest.approx(0.2)
+    assert aggregate["hidden_completion_confidence_mean"] == pytest.approx(0.5)
+    assert aggregate["silhouette_calibration_status"] == "not_measured"
+    assert aggregate["silhouette_confidence_ece"] is None
+
+
+def test_suite_uses_separate_external_silhouette_calibrator(tmp_path):
+    entries = {
+        "pass": _case(tmp_path, "pass", 0.9, 0.04, 0.8, "low"),
+        "fail": _case(tmp_path, "fail", 0.4, 0.08, 0.2, "high"),
+    }
+    model = {"constant_probability": 0.5}
+    summary = summarize_entries(entries, calibration_model=model)
+    aggregate = summary["aggregate"]
+    assert aggregate["silhouette_calibration_status"] == "measured_external_model"
+    assert aggregate["silhouette_confidence_ece"] == pytest.approx(0.0)
+    assert aggregate["silhouette_confidence_brier"] == pytest.approx(0.25)
+    assert all(case["silhouette_pass_probability"] == 0.5
+               for case in summary["cases"])
