@@ -302,6 +302,7 @@ def test_validate_reconstruction(built_project):
     for p in (result.overlay_path, result.silhouette_comparison_path,
               result.depth_comparison_path, result.turntable_path):
         assert p and Path(p).exists(), "missing artifact %s" % p
+    assert (bp["project"] / "validation" / "render_materialid.png").exists()
     assert Path(result.turntable_path).stat().st_size > 0
     metrics_json = bp["project"] / "validation" / "metrics.json"
     assert metrics_json.exists()

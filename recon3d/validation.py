@@ -247,9 +247,25 @@ def main():
     bg.inputs["Color"].default_value = (0.05, 0.05, 0.05, 1.0)
     render_pass("render_shaded.png")
 
-    # part-id: per top-level part emission colour (materials restored after)
+    # Preserve original slots once so both categorical passes can safely
+    # replace and then restore materials, including meshes without slots.
     bg.inputs["Color"].default_value = (0.0, 0.0, 0.0, 1.0)
-    saved_mats = {}
+    saved_mats = {
+        obj.name: [slot.material for slot in obj.material_slots]
+        for obj in bpy.data.objects if obj.type == 'MESH'
+    }
+
+    def restore_materials():
+        for obj_name, mats in saved_mats.items():
+            obj = bpy.data.objects.get(obj_name)
+            if obj is None or obj.type != 'MESH':
+                continue
+            obj.data.materials.clear()
+            for mat in mats:
+                if mat is not None:
+                    obj.data.materials.append(mat)
+
+    # part-id: per top-level part emission colour
     groups = {}
     for obj in bpy.data.objects:
         if obj.type != 'MESH':
@@ -266,21 +282,35 @@ def main():
         col = colorsys.hsv_to_rgb(hue, 0.75, 1.0)
         mat = _emission_material("recon3d_pid_%02d" % gi, col)
         for obj in groups[gid]:
-            if obj.name not in saved_mats:
-                saved_mats[obj.name] = [s.material for s in obj.material_slots]
             if obj.material_slots:
                 for s in obj.material_slots:
                     s.material = mat
             else:
                 obj.data.materials.append(mat)
     render_pass("render_partid.png")
-    for obj_name, mats in saved_mats.items():
-        obj = bpy.data.objects.get(obj_name)
-        if obj is None:
+    restore_materials()
+
+    # material-id: one deterministic emission colour per original material
+    material_groups = {}
+    for obj in bpy.data.objects:
+        if obj.type != 'MESH':
             continue
-        for i, s in enumerate(obj.material_slots):
-            if i < len(mats):
-                s.material = mats[i]
+        signature = tuple(sorted(
+            slot.material.name for slot in obj.material_slots
+            if slot.material is not None)) or ("unassigned",)
+        material_groups.setdefault(signature, []).append(obj)
+    for mi, signature in enumerate(sorted(material_groups)):
+        hue = (mi * 0.61803398875) % 1.0
+        col = colorsys.hsv_to_rgb(hue, 0.75, 1.0)
+        mat = _emission_material("recon3d_mid_%02d" % mi, col)
+        for obj in material_groups[signature]:
+            if obj.material_slots:
+                for slot in obj.material_slots:
+                    slot.material = mat
+            else:
+                obj.data.materials.append(mat)
+    render_pass("render_materialid.png")
+    restore_materials()
 
     # turntable: rotate root about the object up-axis (Blender Y here)
     tt_dir = os.path.join(out_dir, "turntable_frames")
