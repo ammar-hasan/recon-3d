@@ -51,6 +51,16 @@ def generate_report(project_dir: str | Path) -> str:
         lines.append(f"- pipeline seed: {manifest.seeds.get('pipeline', 'n/a')}")
         sw = ", ".join(f"{k} {v}" for k, v in sorted(manifest.software.items()))
         lines.append(f"- software: {sw}")
+        if manifest.status == "unsupported_input":
+            reason = manifest.stage_outputs.get(
+                "unsupported_input_reason", "source evidence is insufficient")
+            lines += [
+                "",
+                "## Unsupported Input",
+                "",
+                f"- reason: {reason}",
+                "- no reconstruction success is claimed",
+            ]
         lines.append("")
 
     # --- segmentation -----------------------------------------------------

@@ -161,6 +161,13 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         SchemaIO.save_json(rlog, project_dir / "validation" / "refinement_log.json")
 
         manifest.status = "success" if val.passed else "partial_success"
+    except input_manager.InputError as exc:
+        # Invalid or insufficient source evidence is an input outcome, not a
+        # reconstruction failure.  Keep the partial project and a machine-
+        # readable reason so callers can distinguish it from failed geometry.
+        manifest.status = "unsupported_input"
+        manifest.stage_outputs["error"] = f"{type(exc).__name__}: {exc}"
+        manifest.stage_outputs["unsupported_input_reason"] = str(exc)
     except Exception as exc:  # noqa: BLE001 - orchestrator must never crash silently
         manifest.status = "failed_validation"
         manifest.stage_outputs["error"] = f"{type(exc).__name__}: {exc}"

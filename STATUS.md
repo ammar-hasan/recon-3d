@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **256 passed, 1 skipped**, including real Blender build,
+- Regression suite: **257 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.962** and genuinely
   held-out `+90°` IoU **0.903** (target ≥ 0.75).
@@ -56,6 +56,10 @@ directories remain gitignored.
   cross-sections, hidden-side continuations, mirror completions, and partial
   occlusion completions. Hypothesis confidence is capped at 0.5 and every
   candidate is accepted or rejected explicitly.
+- Corrupt, missing, and unsupported source files now produce the distinct
+  `unsupported_input` outcome, retain a partial project, record a
+  machine-readable reason, and explicitly avoid a reconstruction success claim
+  in the report.
 - Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 - All eleven required stage ablations now have executable configs; smoke
   evidence and complete matched 11-way `box_01`, `bottle_01`, and `gear_01`
@@ -75,7 +79,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `256 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `257 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation

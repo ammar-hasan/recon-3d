@@ -16,6 +16,7 @@ from PIL import Image
 from recon3d import (
     crop,
     input_manager,
+    pipeline,
     preprocess,
     segmentation,
     svg_cleanup,
@@ -192,6 +193,24 @@ def test_corrupt_and_unsupported_rejected(tmp_path):
             InputSpec(image_paths=[str(tmp_path / "missing.png")],
                       output_dir=str(tmp_path / "o"))
         )
+
+
+def test_pipeline_classifies_invalid_source_as_unsupported_input(tmp_path):
+    bad = tmp_path / "bad.png"
+    bad.write_bytes(b"this is not a png at all")
+    output = tmp_path / "project"
+    manifest = pipeline.run_pipeline(
+        InputSpec(image_paths=[str(bad)], output_dir=str(output)),
+        PipelineConfig(),
+    )
+
+    assert manifest.status == "unsupported_input"
+    assert "corrupt" in manifest.stage_outputs["unsupported_input_reason"]
+    assert (output / "manifest.json").is_file()
+    assert (output / "report.md").is_file()
+    report = (output / "report.md").read_text()
+    assert "## Unsupported Input" in report
+    assert "no reconstruction success is claimed" in report
 
 
 def test_hint_validation(tmp_path):
