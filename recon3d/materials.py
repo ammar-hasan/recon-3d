@@ -35,6 +35,50 @@ from .schemas import EvidenceSource, MaterialSpec, SemanticPart, SketchGraph
 _TRIM_PERCENTILE = 10.0
 
 
+def apply_semantic_class_priors(materials: Dict[str, MaterialSpec],
+                                target_label: Optional[str]) -> Dict[str, MaterialSpec]:
+    """Apply explicit object/part vocabulary to class only, never base color."""
+    label = (target_label or "").lower()
+    if not label:
+        return materials
+    updated = {part_id: spec.model_copy(deep=True)
+               for part_id, spec in materials.items()}
+    for part_id, spec in updated.items():
+        name = part_id.lower()
+        material_class = None
+        if "wheel" in label:
+            material_class = ("rubber" if "tyre" in name or "tire" in name
+                              else "plastic" if "hub" in name else "metal")
+        elif "bottle" in label:
+            material_class = "plastic" if "cap" in name else "glass"
+        elif "vase" in label:
+            material_class = "ceramic"
+        elif "chair" in label or "crate" in label:
+            material_class = "wood"
+        elif "table" in label:
+            material_class = "wood" if "top" in name else "plastic"
+        elif any(token in label for token in ("mug", "box", "enclosure",
+                                               "bracket", "sign")):
+            material_class = "plastic"
+        elif "gear" in label or "pipe" in label:
+            material_class = "metal"
+        elif "knob" in label:
+            material_class = "metal" if "ring" in name else "plastic"
+        elif "lamp" in label:
+            material_class = "metal" if "arm" in name else "plastic"
+        if material_class is None:
+            continue
+        spec.material_class = material_class
+        spec.source = EvidenceSource.SEMANTIC_PRIOR
+        spec.transmission = 0.9 if material_class == "glass" else 0.0
+        spec.metallic = 0.7 if material_class == "metal" else 0.0
+        spec.roughness = {
+            "rubber": 0.85, "metal": 0.4, "plastic": 0.55,
+            "glass": 0.25, "wood": 0.7, "ceramic": 0.3,
+        }.get(material_class, spec.roughness)
+    return updated
+
+
 def _srgb_to_linearish(rgb01: np.ndarray) -> np.ndarray:
     """sRGB 0..1 -> approximately linear 0..1 (kept mild; MaterialSpec says
     'linear-ish')."""

@@ -895,6 +895,10 @@ def build_plan(
             material_source = "image_sampling"
         except Exception:
             material_map = {}
+    material_map = materials_mod.apply_semantic_class_priors(
+        material_map, spec.target_label)
+    if spec.target_label and material_map:
+        material_source = "image_sampling_with_semantic_class_prior"
 
     builder = _PlanBuilder(graph, camera, depth, material_map)
     builders = {

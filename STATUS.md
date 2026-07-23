@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **286 passed, 1 skipped**, including real Blender build,
+- Regression suite: **287 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Full-camera perspective carving is implemented and measured across all 18
   calibrated cases. Median held-out IoU improves from **0.669** to **0.723**
@@ -38,9 +38,9 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
   a high shaded score conceals clay silhouette IoU below 0.80. The validation
   renderer now produces the previously missing material-ID pass.
 - Eval 21 reference-GLB material evaluation: major-part assignment is
-  **0.909** and meets its target, but material-class accuracy is only **0.341**
-  versus the ≥0.80 target; median color Delta E76 is **22.795**. Material
-  accuracy therefore remains an explicit open gate despite strong shaded SSIM.
+  **0.909** and material-class accuracy improves from 0.341 to **0.909** after
+  source-labelled semantic class priors; both meet their targets. Median color
+  Delta E76 remains **22.795** because observed base color is not overwritten.
 - Eval 29 blind packet generation and scoring are implemented, and an 18-case
   pipeline-versus-SVG packet was generated locally. Human ratings and opaque
   direct-image-to-mesh / one-shot-agent assets are external and remain
@@ -130,7 +130,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `286 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `287 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation

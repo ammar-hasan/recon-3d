@@ -643,6 +643,25 @@ def test_materials_highlight_shadow_invariant(tmp_path):
     assert spec.material_class in ("rubber", "plastic", "metal")
 
 
+def test_semantic_material_priors_change_class_but_preserve_observed_color():
+    observed = MaterialSpec(
+        material_class="metal", base_color=(0.12, 0.2, 0.3),
+        source=EvidenceSource.FITTED_FROM_OBSERVATION)
+    bottle = materials_mod.apply_semantic_class_priors(
+        {"part_bottle_body_0": observed}, "bottle")
+    assert bottle["part_bottle_body_0"].material_class == "glass"
+    assert bottle["part_bottle_body_0"].base_color == observed.base_color
+    assert bottle["part_bottle_body_0"].source == EvidenceSource.SEMANTIC_PRIOR
+    assert observed.material_class == "metal"  # input was not mutated
+
+    wheel = materials_mod.apply_semantic_class_priors({
+        "part_tyre_0": observed, "part_rim_0": observed,
+        "part_hub_0": observed}, "wheel")
+    assert wheel["part_tyre_0"].material_class == "rubber"
+    assert wheel["part_rim_0"].material_class == "metal"
+    assert wheel["part_hub_0"].material_class == "plastic"
+
+
 # ---------------------------------------------------------------------------
 # depth heuristic (stage 12)
 # ---------------------------------------------------------------------------
