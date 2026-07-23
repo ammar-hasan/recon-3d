@@ -31,7 +31,7 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
                    multiview_refinement, multiview_visual_hull, operators,
                    preprocess, primitives,
                    refinement, runner, segmentation, semantic_parts, sketch_graph,
-                   svg_cleanup, validation, vectorize)
+                   svg_cleanup, uncertainty, validation, vectorize)
 
     project_dir = Path(spec.output_dir)
     _ensure_dirs(project_dir)
@@ -81,6 +81,17 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
             str(project_dir / "geometry" / "multiview"))
         SchemaIO.save_json(mv_result, project_dir / "geometry" / "multiview.json")
 
+        if not cfg.uncertainty.enabled:
+            graph = uncertainty.disable_tracking(graph)
+            cam = uncertainty.disable_tracking(cam)
+            dep = uncertainty.disable_tracking(dep)
+            mv_result = uncertainty.disable_tracking(mv_result)
+            mv_result.warnings.append(
+                "uncertainty tracking disabled by ablation; all input "
+                "confidences forced to 1.0")
+            SchemaIO.save_json(
+                mv_result, project_dir / "geometry" / "multiview.json")
+
         graph = operators.classify_operators(graph, dep, cfg)
 
         # Phase 7: optional hidden-geometry proposals are explicitly scored,
@@ -91,9 +102,18 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
             hypothesis_report, project_dir / "geometry" / "hypotheses.json")
         SchemaIO.save_json(graph, project_dir / "geometry" / "sketch_graph.json")
         plan = construction_plan.build_plan(graph, cam, dep, spec, cfg)
+        if not cfg.uncertainty.enabled:
+            plan = uncertainty.disable_tracking(plan)
+            plan.metadata = dict(plan.metadata)
+            plan.metadata["uncertainty_tracking"] = "disabled_ablation"
         plan, mv_result, visual_hull_used = (
             multiview_visual_hull.augment_plan_with_visual_hull(
                 plan, mv_result, seg, cfg))
+        if not cfg.uncertainty.enabled:
+            plan = uncertainty.disable_tracking(plan)
+            plan.metadata = dict(plan.metadata)
+            plan.metadata["uncertainty_tracking"] = "disabled_ablation"
+            mv_result = uncertainty.disable_tracking(mv_result)
         SchemaIO.save_json(mv_result, project_dir / "geometry" / "multiview.json")
         errors = construction_plan.validate_plan(plan)
         if errors:

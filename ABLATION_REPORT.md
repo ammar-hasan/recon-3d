@@ -2,7 +2,7 @@
 
 Date: 2026-07-23
 
-The repository now exposes real stage bypasses for ten of `EVAL.md`'s eleven
+The repository now exposes real stage bypasses for all eleven of `EVAL.md`'s
 required ablations. Every config can be
 passed to either `recon3d.pipeline --config ...` or the full E2E runner's new
 `--config` option.
@@ -19,6 +19,7 @@ passed to either `recon3d.pipeline --config ...` or the full E2E runner's new
 | without depth | `no_depth.yaml` | retains normals but omits depth output and per-part estimates |
 | without normals | `no_normals.yaml` | retains depth but omits normal output |
 | without refinement | `no_refinement.yaml` | preserves initial validation and records zero iterations |
+| without uncertainty tracking | `no_uncertainty_tracking.yaml` | forces all pre-decision confidence values to 1.0 and clears uncertainty summaries while preserving provenance |
 
 `no_depth_normals.yaml` is retained as an additional combined ablation.
 
@@ -30,6 +31,7 @@ On the unguided 320 px `box_01` input:
 | --- | --- | ---: | ---: | --- |
 | no refinement | `partial_success` | 0.487 | 0 | valid `.blend`/GLB and audit log retained |
 | no semantic reasoning | `partial_success` | 0.286 | 11 | anonymous part fallback remains executable |
+| no uncertainty tracking | `partial_success` | 0.558 | 11 | primitive/part confidences all 1.0; two hypotheses accepted; uncertainty summary empty |
 
 These are execution smokes, not contribution estimates against a matched full
 run. The full cross-case matrix still needs to measure accuracy, part recall,
@@ -49,12 +51,9 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
 
 Use distinct project/result roots for every ablation.
 
-## Remaining required control
+## Remaining evaluation work
 
-Uncertainty tracking cannot yet be disabled independently. Confidence and
-evidence provenance are structural fields used across typed stage interfaces,
-operator selection, hypotheses, validation, and reporting; merely hiding the
-final fields would not be a valid ablation.
-
-Until that control and the full matrix are run, the required 11-way
-ablation evaluation is incomplete.
+All required controls exist, but the full matched cross-case matrix has not
+been run. It must still measure accuracy, part recall, editability, execution
+reliability, runtime, and human preference for every ablation before the
+required 11-way ablation evaluation is complete.

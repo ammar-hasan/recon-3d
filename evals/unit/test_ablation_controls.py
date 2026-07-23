@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 
 from recon3d import (camera, constraints, depth, primitives, segmentation,
-                     semantic_parts)
+                     semantic_parts, uncertainty)
 from recon3d.config import PipelineConfig
 from recon3d.schemas import (
     CropMetadata,
@@ -81,6 +81,7 @@ def test_required_ablation_configs_load():
         "no_semantic_part_reasoning.yaml", "no_camera_estimation.yaml",
         "no_background_removal.yaml", "no_depth.yaml", "no_normals.yaml",
         "no_depth_normals.yaml", "no_refinement.yaml",
+        "no_uncertainty_tracking.yaml",
     )
     for name in names:
         PipelineConfig.from_yaml(root / name)
@@ -128,3 +129,14 @@ def test_depth_and_normals_can_be_disabled_independently(tmp_path):
     assert depth_only.backend == "depth_only"
     assert Path(depth_only.depth_path).is_file()
     assert depth_only.normals_path is None
+
+
+def test_uncertainty_ablation_uniforms_confidence_but_preserves_source():
+    graph = SketchGraph(
+        primitives=[_primitive()], uncertainty={"physical_scale": "unknown"})
+    graph.primitives[0].confidence = 0.2
+    graph.primitives[0].source = EvidenceSource.FITTED_FROM_OBSERVATION
+    uniform = uncertainty.disable_tracking(graph)
+    assert uniform.primitives[0].confidence == 1.0
+    assert uniform.primitives[0].source == EvidenceSource.FITTED_FROM_OBSERVATION
+    assert uniform.uncertainty == {}

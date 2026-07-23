@@ -118,6 +118,10 @@ class SemanticConfig(BaseModel):
     enabled: bool = True
 
 
+class UncertaintyConfig(BaseModel):
+    enabled: bool = True
+
+
 class PipelineConfig(BaseModel):
     segmentation: SegmentationConfig = Field(default_factory=SegmentationConfig)
     crop: CropConfig = Field(default_factory=CropConfig)
@@ -127,6 +131,7 @@ class PipelineConfig(BaseModel):
     primitives: PrimitiveConfig = Field(default_factory=PrimitiveConfig)
     constraints: ConstraintConfig = Field(default_factory=ConstraintConfig)
     semantics: SemanticConfig = Field(default_factory=SemanticConfig)
+    uncertainty: UncertaintyConfig = Field(default_factory=UncertaintyConfig)
     camera: CameraConfig = Field(default_factory=CameraConfig)
     depth: DepthConfig = Field(default_factory=DepthConfig)
     blender: BlenderConfig = Field(default_factory=BlenderConfig)
