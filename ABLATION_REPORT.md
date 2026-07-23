@@ -95,6 +95,36 @@ that the neutral modules are redundant: the current easy cases provide little
 camera, depth, normal, or constraint sensitivity. Human preference remains
 unmeasured rather than inferred from automated scores.
 
+## Matched 11-way matrix: `gear_01`
+
+The radial-array family was run as a third fresh matched matrix. All 12
+pipelines again executed in Blender, reopened independently, and produced valid
+GLB artifacts; the matrix is 11/11 complete.
+
+Full baseline: silhouette IoU **0.915**, part recall **1.000**, editability
+**1.000**, Blender/GLB success **1.000**, runtime **87 s**.
+
+| Ablation | Silhouette Δ | Part recall Δ | Editability Δ | Runtime Δ | MVP |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| no background removal | +0.085 | 0.000 | 0.000 | -1 s | no (segmentation gate) |
+| no VTracer | +0.002 | 0.000 | 0.000 | -2 s | yes |
+| no SVG simplification | -0.003 | 0.000 | 0.000 | +2 s | yes |
+| no primitive fitting | -0.003 | 0.000 | 0.000 | -10 s | yes |
+| no constraint detection | 0.000 | 0.000 | 0.000 | -11 s | yes |
+| no semantic part reasoning | **-0.135** | **-1.000** | **-1.000** | +112 s | no |
+| no camera estimation | 0.000 | 0.000 | 0.000 | -8 s | yes |
+| no depth | **+0.047** | 0.000 | 0.000 | -9 s | yes |
+| no normals | 0.000 | 0.000 | 0.000 | -16 s | yes |
+| no refinement | 0.000 | 0.000 | 0.000 | -41 s | yes |
+| no uncertainty tracking | 0.000 | 0.000 | 0.000 | -24 s | yes |
+
+This family repeats the semantic and segmentation findings. It also provides
+important counterevidence: disabling depth improves the reference-view
+silhouette by 0.047. The current depth estimate therefore does not demonstrate
+consistent value across these matched cases and needs unseen-view-sensitive
+evaluation or a stronger estimator before it can be credited as an accuracy
+gain.
+
 ## Reproduction
 
 ```bash
@@ -124,8 +154,8 @@ Use distinct project/result roots for every ablation.
 
 ## Remaining evaluation work
 
-All required controls and automated comparison dimensions now work, and two
-construction families have complete matched matrices. The matrix must still
-be expanded to more geometrically sensitive families. Human preference
-remains explicitly `not_measured` because it cannot be inferred from automated
-metrics.
+All required controls and automated comparison dimensions now work, and three
+construction families have complete matched matrices. More geometrically
+sensitive cases are still needed for modules that remain neutral on these
+inputs. Human preference remains explicitly `not_measured` because it cannot
+be inferred from automated metrics.
