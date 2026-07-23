@@ -63,9 +63,37 @@ full-frame prediction fails the segmentation gate. Semantic reasoning and
 depth are the only controls with large downstream geometry losses on this
 case; broader cases are required before judging the other modules redundant.
 
-These are execution smokes, not contribution estimates against a matched full
-run. The full cross-case matrix still needs to measure accuracy, part recall,
-editability, reliability, runtime, and human preference deltas.
+## Matched 11-way matrix: `bottle_01`
+
+A second fresh full baseline plus all eleven controls was run with the same
+mask, label, benchmark case, code, Blender reopen probe, and scoring logic.
+All 12 pipelines produced valid Blender and GLB artifacts; this matrix is also
+11/11 complete.
+
+Full baseline: silhouette IoU **0.960**, part recall **1.000**, editability
+**1.000**, Blender/GLB success **1.000**, runtime **79 s**.
+
+| Ablation | Silhouette Δ | Part recall Δ | Editability Δ | Runtime Δ | MVP |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| no background removal | +0.040 | 0.000 | 0.000 | +4 s | no (segmentation gate) |
+| no VTracer | +0.000 | 0.000 | 0.000 | -18 s | yes |
+| no SVG simplification | +0.002 | 0.000 | 0.000 | -13 s | yes |
+| no primitive fitting | +0.006 | 0.000 | 0.000 | -15 s | yes |
+| no constraint detection | 0.000 | 0.000 | 0.000 | -16 s | yes |
+| no semantic part reasoning | **-0.322** | **-1.000** | **-1.000** | +272 s | no |
+| no camera estimation | 0.000 | 0.000 | 0.000 | -14 s | yes |
+| no depth | 0.000 | 0.000 | 0.000 | -11 s | yes |
+| no normals | 0.000 | 0.000 | 0.000 | -12 s | yes |
+| no refinement | 0.000 | 0.000 | 0.000 | -41 s | yes |
+| no uncertainty tracking | 0.000 | 0.000 | 0.000 | -11 s | yes |
+
+The two complete matched families consistently show that semantic part
+reasoning is essential to semantic recall and meaningful editability, while
+the background-removal bypass fails the segmentation gate even when the
+reference-view silhouette metric is misleadingly high. They do not establish
+that the neutral modules are redundant: the current easy cases provide little
+camera, depth, normal, or constraint sensitivity. Human preference remains
+unmeasured rather than inferred from automated scores.
 
 ## Reproduction
 
@@ -96,7 +124,8 @@ Use distinct project/result roots for every ablation.
 
 ## Remaining evaluation work
 
-All required controls and automated comparison dimensions now work, and one
-case has a complete matched matrix. The matrix must still be expanded across
-construction families. Human preference remains explicitly `not_measured`
-because it cannot be inferred from automated metrics.
+All required controls and automated comparison dimensions now work, and two
+construction families have complete matched matrices. The matrix must still
+be expanded to more geometrically sensitive families. Human preference
+remains explicitly `not_measured` because it cannot be inferred from automated
+metrics.

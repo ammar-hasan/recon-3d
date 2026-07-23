@@ -58,7 +58,7 @@ directories remain gitignored.
   candidate is accepted or rejected explicitly.
 - Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 - All eleven required stage ablations now have executable configs; smoke
-  evidence and a complete matched 11-way `box_01` matrix are documented in
+  evidence and complete matched 11-way `box_01` and `bottle_01` matrices are documented in
   [`ABLATION_REPORT.md`](ABLATION_REPORT.md).
 
 ## Verification commands
@@ -110,7 +110,8 @@ block the full `GOAL.md` success definition:
    and `table_01` retain internal `partial_success` status because the
    pipeline's preferred refinement target is 0.90 even though every MVP hard
    gate passes.
-5. The 11-way matrix is complete for `box_01` but not yet cross-family;
+5. The 11-way matrix is complete for `box_01` and `bottle_01`, but broader
+   geometrically sensitive coverage is still required;
    opaque image-to-mesh/VLM baselines,
    failure-detection evaluation, and human edit-task evaluation from
    `EVAL.md` remain research evaluation work. Only the concrete ablations
