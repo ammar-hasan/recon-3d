@@ -10,7 +10,8 @@ import numpy as np
 import pytest
 
 from evals.e2e.glbcheck import validate_glb
-from evals.e2e.run_e2e import (_case_label, _labels_match, _pipeline_command,
+from evals.e2e.run_e2e import (_case_label, _editability_score, _labels_match,
+                               _pipeline_command,
                                major_part_recall,
                                rasterize_cleaned_paths,
                                rasterize_svg_silhouette, safety_scan,
@@ -27,6 +28,15 @@ def test_pipeline_command_forwards_ablation_config(tmp_path):
         case, tmp_path / "project", True, "python", label="box",
         config="evals/ablations/no_refinement.yaml")
     assert command[-2:] == ["--config", "evals/ablations/no_refinement.yaml"]
+
+
+def test_editability_requires_semantic_part_coverage():
+    reopen = {"reopens": True, "part_separation": True,
+              "meaningful_name_rate": 1.0}
+    assert _editability_score(
+        reopen, {"available": True, "major_part_recall": 1.0}) == 1.0
+    assert _editability_score(
+        reopen, {"available": True, "major_part_recall": 0.0}) == 0.0
 
 
 def _write_glb(path: Path, gltf: dict, magic=b"glTF", version=2,

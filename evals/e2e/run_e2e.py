@@ -937,6 +937,17 @@ def _gate(value: Optional[bool]) -> Optional[bool]:
     return None if value is None else bool(value)
 
 
+def _editability_score(reopen: Dict[str, Any], parts: Dict[str, Any]
+                       ) -> Optional[float]:
+    if not reopen.get("reopens"):
+        return None
+    structural = (0.6 * float(reopen.get("part_separation", False))
+                  + 0.4 * reopen.get("meaningful_name_rate", 0.0))
+    semantic_coverage = (parts.get("major_part_recall")
+                         if parts.get("available") else 0.0)
+    return structural * float(semantic_coverage)
+
+
 def build_report(case: Dict[str, Any], project_dir: Path,
                  nomask_project_dir: Optional[Path],
                  blender: Optional[str]) -> Dict[str, Any]:
@@ -960,10 +971,10 @@ def build_report(case: Dict[str, Any], project_dir: Path,
     hypotheses = score_hypotheses(project_dir)
 
     reopen = blend.get("reopen") or {}
-    editability_score = None
-    if reopen.get("reopens"):
-        editability_score = (0.6 * float(reopen.get("part_separation", False))
-                             + 0.4 * reopen.get("meaningful_name_rate", 0.0))
+    # A single anonymous but well-named mesh is not meaningfully editable
+    # when the reference has several major components. Couple Blender
+    # structure to measured semantic part coverage.
+    editability_score = _editability_score(reopen, parts)
 
     # --- hard gates ---
     seg_iou_for_gates = (nomask_seg.get("mask_iou")
@@ -1074,23 +1085,38 @@ def build_report(case: Dict[str, Any], project_dir: Path,
 
 def evaluate_case(case: Dict[str, Any], projects_root: Path, out_dir: Path,
                   python: str, blender: Optional[str], skip_pipeline: bool,
-                  timeout: int, config: Optional[str] = None) -> Dict[str, Any]:
+                  timeout: int, config: Optional[str] = None,
+                  run_baseline: bool = True,
+                  run_unguided: bool = True) -> Dict[str, Any]:
     case_id = case["case_id"]
     project_dir = projects_root / case_id
     nomask_dir = projects_root / (case_id + "_nomask")
     try:
+        guided_run = None
         if not skip_pipeline:
             project_dir.mkdir(parents=True, exist_ok=True)
-            run_pipeline(case, project_dir, use_mask=True,
-                         python=python, timeout=timeout,
-                         label=_case_label(case), config=config)
-            if case["meta"].get("difficulty") == "easy":
+            guided_run = run_pipeline(
+                case, project_dir, use_mask=True, python=python,
+                timeout=timeout, label=_case_label(case), config=config)
+            if run_unguided and case["meta"].get("difficulty") == "easy":
                 nomask_dir.mkdir(parents=True, exist_ok=True)
                 run_pipeline(case, nomask_dir, use_mask=False,
                              python=python, timeout=timeout, config=config)
+        else:
+            manifest = _read_json(project_dir / "manifest.json") or {}
+            try:
+                started = datetime.datetime.fromisoformat(manifest["started_at"])
+                finished = datetime.datetime.fromisoformat(manifest["finished_at"])
+                seconds = round((finished - started).total_seconds(), 1)
+            except Exception:
+                seconds = None
+            guided_run = {"invoked": False, "returncode": 0,
+                          "seconds": seconds, "reused": True}
         report = build_report(case, project_dir, nomask_dir, blender)
-        report["baseline_svg_extrusion"] = svg_extrusion_baseline(
-            case, out_dir / "baseline" / case_id, blender)
+        report["pipeline_run"] = guided_run
+        report["baseline_svg_extrusion"] = (
+            svg_extrusion_baseline(case, out_dir / "baseline" / case_id, blender)
+            if run_baseline else {"available": False, "skipped": True})
         report["ablation_no_refinement"] = ablation_no_refinement(project_dir)
         report["evaluation_error"] = None
     except Exception as exc:  # noqa: BLE001
@@ -1142,6 +1168,9 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
             "status": r.get("status"),
             "passed_mvp": r.get("final_result", {}).get("passed_mvp"),
             "overall_score": r.get("final_result", {}).get("overall_score"),
+            "editability_score": r.get("group_scores", {}).get("editability"),
+            "pipeline_seconds": (r.get("pipeline_run") or {}).get("seconds"),
+            "pipeline_returncode": (r.get("pipeline_run") or {}).get("returncode"),
             "blocking_failures": r.get("blocking_failures", []),
             "guidance": r.get("guidance"),
             "segmentation_iou": sr.get("segmentation", {}).get("mask_iou"),
@@ -1194,6 +1223,8 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
         "silhouette_iou_mean": _mean([c["silhouette_iou"] for c in cases]),
         "contour_error_mean": _mean([c["contour_error"] for c in cases]),
         "overall_score_mean": _mean([c["overall_score"] for c in cases]),
+        "editability_score_mean": _mean([c["editability_score"] for c in cases]),
+        "pipeline_seconds_mean": _mean([c["pipeline_seconds"] for c in cases]),
         "blender_success_rate": _mean([
             float(c["blender_execution_success"]) for c in cases
             if c["blender_execution_success"] is not None]),
@@ -1224,6 +1255,8 @@ def write_dashboard(reports: List[Dict[str, Any]], out_dir: Path) -> Dict[str, A
              "- camera score (mean): %s" % _fmt(summary["camera_score_mean"]),
              "- silhouette IoU (mean): %s" % _fmt(summary["silhouette_iou_mean"]),
              "- contour error (mean): %s" % _fmt(summary["contour_error_mean"]),
+             "- editability score (mean): %s" % _fmt(summary["editability_score_mean"]),
+             "- pipeline runtime seconds (mean): %s" % _fmt(summary["pipeline_seconds_mean"]),
              "- blender success rate: %s" % _fmt(summary["blender_success_rate"]),
              "- GLB valid rate: %s" % _fmt(summary["glb_valid_rate"]),
              "- safety violations: %d" % summary["safety_violations_total"],
@@ -1283,6 +1316,10 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("--python", default=sys.executable)
     ap.add_argument("--config", default=None,
                     help="pipeline YAML config, including ablation configs")
+    ap.add_argument("--skip-baseline", action="store_true",
+                    help="skip the unchanged SVG-extrusion baseline render")
+    ap.add_argument("--skip-unguided", action="store_true",
+                    help="skip the extra easy-case unguided segmentation run")
     args = ap.parse_args(argv)
 
     dataset_dir = Path(args.dataset)
@@ -1306,7 +1343,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         print("[%d/%d] %s ..." % (i + 1, len(case_ids), cid), flush=True)
         report = evaluate_case(case, projects_root, out_dir, args.python,
                                blender, args.skip_pipeline, args.timeout,
-                               config=args.config)
+                               config=args.config,
+                               run_baseline=not args.skip_baseline,
+                               run_unguided=not args.skip_unguided)
         fr = report.get("final_result", {})
         print("      -> %s score=%s blocking=%s"
               % ("PASS" if fr.get("passed_mvp") else "FAIL",

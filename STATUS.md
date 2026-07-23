@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **253 passed, 1 skipped**, including real Blender build,
+- Regression suite: **256 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.962** and genuinely
   held-out `+90°` IoU **0.903** (target ≥ 0.75).
@@ -58,7 +58,7 @@ directories remain gitignored.
   candidate is accepted or rejected explicitly.
 - Per-project Blender MCP configuration is tracked in `.codex/config.toml`.
 - All eleven required stage ablations now have executable configs; smoke
-  evidence and the still-unrun matched matrix are documented in
+  evidence and a complete matched 11-way `box_01` matrix are documented in
   [`ABLATION_REPORT.md`](ABLATION_REPORT.md).
 
 ## Verification commands
@@ -74,7 +74,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `253 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `256 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation
@@ -110,7 +110,8 @@ block the full `GOAL.md` success definition:
    and `table_01` retain internal `partial_success` status because the
    pipeline's preferred refinement target is 0.90 even though every MVP hard
    gate passes.
-5. The full 11-way ablation matrix, opaque image-to-mesh/VLM baselines,
+5. The 11-way matrix is complete for `box_01` but not yet cross-family;
+   opaque image-to-mesh/VLM baselines,
    failure-detection evaluation, and human edit-task evaluation from
    `EVAL.md` remain research evaluation work. Only the concrete ablations
    listed above have been run.

@@ -33,6 +33,36 @@ On the unguided 320 px `box_01` input:
 | no semantic reasoning | `partial_success` | 0.286 | 11 | anonymous part fallback remains executable |
 | no uncertainty tracking | `partial_success` | 0.558 | 11 | primitive/part confidences all 1.0; two hypotheses accepted; uncertainty summary empty |
 
+## Matched 11-way matrix: `box_01`
+
+The resumable matrix runner executed a fresh full baseline plus all eleven
+ablations with the same supplied mask, label, benchmark case, current code,
+Blender reopen probe, and scoring logic. All 12 pipelines produced Blender
+artifacts; the matrix is 11/11 complete for this case.
+
+Full baseline: silhouette IoU **0.922**, part recall **1.000**, editability
+**1.000**, Blender/GLB success **1.000**, runtime **84 s**.
+
+| Ablation | Silhouette Δ | Part recall Δ | Editability Δ | Runtime Δ | MVP |
+| --- | ---: | ---: | ---: | ---: | :---: |
+| no background removal | +0.078 | 0.000 | 0.000 | +1 s | no (segmentation gate) |
+| no VTracer | -0.006 | 0.000 | 0.000 | -1 s | yes |
+| no SVG simplification | -0.000 | 0.000 | 0.000 | -3 s | yes |
+| no primitive fitting | -0.006 | 0.000 | 0.000 | -8 s | yes |
+| no constraint detection | 0.000 | 0.000 | 0.000 | -8 s | yes |
+| no semantic part reasoning | **-0.553** | **-1.000** | **-1.000** | +332 s | no |
+| no camera estimation | 0.000 | 0.000 | 0.000 | -9 s | yes |
+| no depth | **-0.202** | 0.000 | 0.000 | +162 s | no |
+| no normals | 0.000 | 0.000 | 0.000 | -13 s | yes |
+| no refinement | 0.000 | 0.000 | 0.000 | -51 s | yes |
+| no uncertainty tracking | 0.000 | 0.000 | 0.000 | -32 s | yes |
+
+All ablations retained Blender execution and GLB validity on this case. The
+background-removal silhouette score of 1.0 is deliberately not a success: its
+full-frame prediction fails the segmentation gate. Semantic reasoning and
+depth are the only controls with large downstream geometry losses on this
+case; broader cases are required before judging the other modules redundant.
+
 These are execution smokes, not contribution estimates against a matched full
 run. The full cross-case matrix still needs to measure accuracy, part recall,
 editability, reliability, runtime, and human preference deltas.
@@ -49,11 +79,24 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
+Run or resume the complete orchestrated matrix with:
+
+```bash
+PYTHONPATH=. .venv/bin/python -m evals.ablations.run_matrix \
+  --cases box_01,bottle_01,gear_01 \
+  --ablations all \
+  --projects-root projects/ablation_matrix \
+  --results-root evals/results_ablation_matrix \
+  --workers 2 \
+  --python .venv/bin/python \
+  --resume
+```
+
 Use distinct project/result roots for every ablation.
 
 ## Remaining evaluation work
 
-All required controls exist, but the full matched cross-case matrix has not
-been run. It must still measure accuracy, part recall, editability, execution
-reliability, runtime, and human preference for every ablation before the
-required 11-way ablation evaluation is complete.
+All required controls and automated comparison dimensions now work, and one
+case has a complete matched matrix. The matrix must still be expanded across
+construction families. Human preference remains explicitly `not_measured`
+because it cannot be inferred from automated metrics.
