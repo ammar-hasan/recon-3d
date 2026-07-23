@@ -107,6 +107,30 @@ semantic prior has worse Chamfer. The priors therefore provide measurable
 silhouette value but are not yet accurate 3D completion; they cannot close
 Eval 20's surface target.
 
+### Visual hull versus parametric construction
+
+The `no_multiview_visual_hull` control now disables only the hull and keeps
+joint multiview refinement enabled. This compares the hull against the
+editable parametric construction without conflating the refinement stage.
+
+| Case | Full IoU | No hull IoU | Full Chamfer | No hull Chamfer |
+| --- | ---: | ---: | ---: | ---: |
+| `box_01` | 0.796 | 0.184 | 0.102 | **0.045** |
+| `bottle_01` | 0.869 | **0.973** | **0.079** | 0.087 |
+| `gear_01` | 0.754 | 0.090 | 0.049 | **0.044** |
+| `mug_01` | 0.760 | 0.168 | 0.093 | **0.037** |
+| `chair_01` | 0.332 | 0.094 | 0.066 | **0.041** |
+| `pipe_elbow_01` | 0.652 | 0.409 | **0.076** | 0.086 |
+
+The hull raises median held-out IoU from **0.176** to **0.757**, while the
+parametric construction lowers median Chamfer from **0.078** to **0.044** and
+passes the surface target on this subset. Joint refinement executed for the
+no-hull runs but retained no depth change: its unconstrained 3–4× depth
+solutions improved secondary silhouettes while violating the primary-view
+preservation gate. The next geometry problem is therefore view-consistent
+pose/depth for the editable parametric construction, not simply more hull
+resolution.
+
 ## Reproduction
 
 ```bash

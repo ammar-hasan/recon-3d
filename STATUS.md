@@ -16,7 +16,7 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **262 passed, 1 skipped**, including real Blender build,
+- Regression suite: **263 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.961** and genuinely
   held-out `+90°` IoU **0.796** with exact primary intrinsics (target ≥ 0.75).
@@ -31,6 +31,10 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Exact-intrinsics semantic-completion ablation: six-family median held-out IoU
   improves from 0.485 to 0.757 (**+0.272**), but surface Chamfer worsens on
   every case receiving a prior.
+- Clean no-visual-hull ablation: editable parametric geometry improves
+  six-family median Chamfer from 0.078 to **0.044**, but median held-out IoU
+  collapses from 0.757 to **0.176** because view-consistent pose/depth remains
+  unresolved.
 
 The reproducible results and per-case table are in
 [`BENCHMARK_REPORT.md`](BENCHMARK_REPORT.md). Generated projects and raw result
@@ -85,7 +89,7 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
   --python .venv/bin/python
 ```
 
-The latest test run produced `262 passed, 1 skipped`. The single-view E2E run produced
+The latest test run produced `263 passed, 1 skipped`. The single-view E2E run produced
 `18/18 passed MVP | silhouette IoU mean 0.910 | baseline IoU mean 0.890`.
 
 The calibrated multiview commands, exact-camera held-out result, and ablation

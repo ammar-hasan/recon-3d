@@ -1,3 +1,2 @@
 multiview:
   visual_hull_enabled: false
-  joint_refinement_enabled: false

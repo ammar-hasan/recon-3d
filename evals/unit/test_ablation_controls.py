@@ -87,6 +87,13 @@ def test_required_ablation_configs_load():
         PipelineConfig.from_yaml(root / name)
 
 
+def test_no_visual_hull_ablation_keeps_joint_refinement_enabled():
+    cfg = PipelineConfig.from_yaml(
+        Path("evals/ablations/no_multiview_visual_hull.yaml"))
+    assert cfg.multiview.visual_hull_enabled is False
+    assert cfg.multiview.joint_refinement_enabled is True
+
+
 def test_background_removal_ablation_uses_full_frame(tmp_path):
     image_path = tmp_path / "input.png"
     cv2.imwrite(str(image_path), np.full((20, 30, 3), 255, np.uint8))
