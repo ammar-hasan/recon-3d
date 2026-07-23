@@ -94,7 +94,9 @@ def estimate_depth(
     out_dir: str,
     cfg: PipelineConfig,
 ) -> DepthEvidence:
-    if not cfg.depth.enabled or cfg.depth.backend == "none":
+    depth_enabled = cfg.depth.enabled and cfg.depth.depth_enabled
+    normals_enabled = cfg.depth.enabled and cfg.depth.normals_enabled
+    if (not depth_enabled and not normals_enabled) or cfg.depth.backend == "none":
         return DepthEvidence(
             backend="none",
             confidence=0.0,
@@ -112,19 +114,26 @@ def estimate_depth(
 
     rgba, mask = _load_inputs(crop_rgba_path, crop_mask_path)
     depth, fg = _relative_depth(rgba, mask)
-    normals_rgb = _normals_from_depth(depth, fg)
+    normals_rgb = _normals_from_depth(depth, fg) if normals_enabled else None
 
     os.makedirs(out_dir, exist_ok=True)
-    depth_path = os.path.join(out_dir, "depth.png")
-    normals_path = os.path.join(out_dir, "normals.png")
-    cv2.imwrite(depth_path, (depth * 65535.0).astype(np.uint16))
-    cv2.imwrite(normals_path, normals_rgb[:, :, ::-1])  # RGB -> BGR for imwrite
-    notes.append("wrote depth.png (16-bit, 65535 = nearest) and normals.png")
+    depth_path = os.path.join(out_dir, "depth.png") if depth_enabled else None
+    normals_path = os.path.join(out_dir, "normals.png") if normals_enabled else None
+    if depth_path:
+        cv2.imwrite(depth_path, (depth * 65535.0).astype(np.uint16))
+        notes.append("wrote depth.png (16-bit, 65535 = nearest)")
+    else:
+        notes.append("depth output and per-part depth estimates disabled by ablation")
+    if normals_path and normals_rgb is not None:
+        cv2.imwrite(normals_path, normals_rgb[:, :, ::-1])  # RGB -> BGR
+        notes.append("wrote normals.png")
+    else:
+        notes.append("normal output disabled by ablation")
 
     region_estimates: Dict[str, EvidencedValue] = {}
     h, w = depth.shape
     fg_count = int(fg.sum())
-    for part in graph.parts:
+    for part in graph.parts if depth_enabled else []:
         prims = part_primitives(graph, part)
         if not prims:
             continue
@@ -150,7 +159,8 @@ def estimate_depth(
     return DepthEvidence(
         depth_path=depth_path,
         normals_path=normals_path,
-        backend=backend,
+        backend=(backend if depth_enabled and normals_enabled else
+                 "depth_only" if depth_enabled else "normals_only"),
         region_estimates=region_estimates,
         confidence=0.45,
         notes=notes,

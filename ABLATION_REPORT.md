@@ -2,21 +2,25 @@
 
 Date: 2026-07-23
 
-The repository now exposes real stage bypasses for seven of `EVAL.md`'s
-required ablations and a combined depth/normals ablation. Every config can be
+The repository now exposes real stage bypasses for ten of `EVAL.md`'s eleven
+required ablations. Every config can be
 passed to either `recon3d.pipeline --config ...` or the full E2E runner's new
 `--config` option.
 
 | Required ablation | Config | Implementation |
 | --- | --- | --- |
+| without background removal | `no_background_removal.yaml` | treats the full image as foreground and records a degraded low-confidence backend |
 | without VTracer | `no_vtracer.yaml` | forces contour vectorizer |
 | without SVG simplification | `no_svg_simplification.yaml` | disables filtering, dedupe tolerance, simplification, and smoothing |
 | without primitive fitting | `no_primitive_fitting.yaml` | emits source-curve fallback primitives only |
 | without constraint detection | `no_constraint_detection.yaml` | returns no geometric constraints |
 | without semantic part reasoning | `no_semantic_part_reasoning.yaml` | groups all traced geometry into one anonymous object part |
 | without camera estimation | `no_camera_estimation.yaml` | emits an explicit zero-confidence fallback camera |
+| without depth | `no_depth.yaml` | retains normals but omits depth output and per-part estimates |
+| without normals | `no_normals.yaml` | retains depth but omits normal output |
 | without refinement | `no_refinement.yaml` | preserves initial validation and records zero iterations |
-| without depth and normals | `no_depth_normals.yaml` | disables the combined depth/normal evidence stage |
+
+`no_depth_normals.yaml` is retained as an additional combined ablation.
 
 ## Real Blender smoke evidence
 
@@ -45,12 +49,12 @@ PYTHONPATH=. .venv/bin/python evals/e2e/run_e2e.py \
 
 Use distinct project/result roots for every ablation.
 
-## Remaining required controls
+## Remaining required control
 
-- Background-removal bypass is not yet implemented as a first-class pipeline
-  mode.
-- Depth and normals cannot yet be disabled independently.
-- Uncertainty tracking cannot yet be disabled independently.
+Uncertainty tracking cannot yet be disabled independently. Confidence and
+evidence provenance are structural fields used across typed stage interfaces,
+operator selection, hypotheses, validation, and reporting; merely hiding the
+final fields would not be a valid ablation.
 
-Until those controls and the full matrix are run, the required 11-way
+Until that control and the full matrix are run, the required 11-way
 ablation evaluation is incomplete.

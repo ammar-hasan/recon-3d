@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 
 class SegmentationConfig(BaseModel):
+    background_removal_enabled: bool = True
     backend: str = "auto"            # auto|rembg|grabcut|threshold|user_mask
     rembg_model: str = "isnet-general-use"
     grabcut_iterations: int = 8
@@ -60,6 +61,8 @@ class CameraConfig(BaseModel):
 class DepthConfig(BaseModel):
     backend: str = "auto"                 # auto|midas|shading|none
     enabled: bool = True
+    depth_enabled: bool = True
+    normals_enabled: bool = True
 
 
 class BlenderConfig(BaseModel):

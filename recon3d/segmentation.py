@@ -418,7 +418,12 @@ def segment(bundle: InputBundle, out_dir: str, cfg: PipelineConfig) -> Segmentat
     mask: Optional[np.ndarray] = None
     backend = ""
 
-    if spec.mask_path and requested in ("auto", "user_mask"):
+    if not cfg.segmentation.background_removal_enabled:
+        mask = np.ones((h, w), dtype=np.uint8)
+        backend = "disabled_background_removal"
+        warnings.append(
+            "background removal disabled by ablation; full image treated as foreground")
+    elif spec.mask_path and requested in ("auto", "user_mask"):
         mask = _mask_from_user(bundle, (h, w))
         backend = "user_mask"
     elif (spec.box is not None or spec.point is not None) and requested in ("auto", "grabcut"):
