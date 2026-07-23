@@ -142,6 +142,10 @@ def generate_report(project_dir: str | Path) -> str:
                             for key, value in sorted(reprojection.items())),
                         "- generated symmetry hypothesis: "
                         f"{_yn(bool(visual_hull.get('generated_symmetry_hypothesis')))}",
+                        f"- hidden/unseen-view risk: "
+                        f"{visual_hull.get('unseen_view_risk', 'unknown')}",
+                        f"- completion confidence: "
+                        f"{visual_hull.get('completion_confidence', 0.0):.3f}",
                     ]
             else:
                 lines.append("- single-view run; multiview fusion not activated")

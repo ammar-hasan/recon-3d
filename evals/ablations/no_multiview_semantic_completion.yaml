@@ -1,0 +1,3 @@
+multiview:
+  visual_hull_box_symmetry_prior_enabled: false
+  visual_hull_semantic_completion_enabled: false

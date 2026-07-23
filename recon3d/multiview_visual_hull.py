@@ -76,33 +76,53 @@ def _calibrated_views(result: MultiViewResult, primary: SegmentationResult,
     return views
 
 
-def _box_symmetry_hypothesis(plan: ConstructionPlan, views: List[_View],
-                             cfg: PipelineConfig) -> Optional[_View]:
-    """Mirror the primary support about an observed box face direction.
+def _semantic_completion_hypothesis(
+    plan: ConstructionPlan, views: List[_View], cfg: PipelineConfig,
+) -> Tuple[Optional[_View], Optional[str]]:
+    """Complete an unobserved support from explicit manufactured-object priors.
 
     With only two silhouettes, their maximal visual hull is systematically
-    too large in the unobserved direction. For enclosure-like semantics, a
-    substantially narrower view near 45 degrees is evidence that the camera
-    is facing a box side. Mirroring the primary support around that direction
-    is a bounded, auditable compactness hypothesis; it is never described as
-    observed evidence and can be disabled for ablation.
+    too large in the unobserved direction. Axially symmetric families reuse
+    their primary support; planar-symmetric families mirror it about a narrow
+    side view. Both are bounded, auditable hypotheses and are never described
+    as observed evidence.
     """
-    if (not cfg.multiview.visual_hull_box_symmetry_prior_enabled
-            or len(views) != 2):
-        return None
+    if len(views) != 2:
+        return None, None
     label = plan.object_id.lower()
-    if not any(token in label for token in ("box", "enclosure", "cabinet", "case")):
-        return None
     primary, secondary = views
     primary_width = (primary.bbox[2] - primary.bbox[0]) / primary.pixels_per_unit
     secondary_width = ((secondary.bbox[2] - secondary.bbox[0])
                        / secondary.pixels_per_unit)
     angle = secondary.camera_azimuth_deg
-    if not (25.0 <= abs(angle) <= 65.0 and secondary_width < 0.9 * primary_width):
-        return None
-    return _View(
-        "generated_box_symmetry", primary.mask, primary.bbox,
-        2.0 * angle, primary.pixels_per_unit)
+    if not 25.0 <= abs(angle) <= 65.0:
+        return None, None
+
+    axial = ("bottle", "vase", "knob", "gear", "wheel")
+    if (cfg.multiview.visual_hull_semantic_completion_enabled
+            and any(token in label for token in axial)):
+        return (_View(
+            "generated_axial_invariance", primary.mask, primary.bbox,
+            2.0 * angle, primary.pixels_per_unit),
+            "axial silhouette invariance from object semantics")
+
+    enclosure = ("box", "enclosure", "cabinet", "case")
+    planar = ("mug", "pipe")
+    enabled = (cfg.multiview.visual_hull_semantic_completion_enabled
+               and any(token in label for token in planar))
+    enabled = enabled or (
+        cfg.multiview.visual_hull_box_symmetry_prior_enabled
+        and any(token in label for token in enclosure))
+    if not enabled or secondary_width >= 0.9 * primary_width:
+        return None, None
+    flipped = cv2.flip(primary.mask, 1)
+    width = primary.mask.shape[1]
+    x0, y0, x1, y1 = primary.bbox
+    flipped_bbox = (width - x1, y0, width - x0, y1)
+    return (_View(
+        "generated_planar_symmetry", flipped, flipped_bbox,
+        2.0 * angle, primary.pixels_per_unit),
+        "primary silhouette mirrored about an observed narrow symmetry plane")
 
 
 def _inside(view: _View, x: np.ndarray, y: np.ndarray,
@@ -189,7 +209,8 @@ def augment_plan_with_visual_hull(
     )
     coords = np.meshgrid(*ranges, indexing="ij")
     occupied = np.ones((grid, grid, grid), dtype=bool)
-    hypothesis_view = _box_symmetry_hypothesis(plan, views, cfg)
+    hypothesis_view, hypothesis_note = _semantic_completion_hypothesis(
+        plan, views, cfg)
     carving_views = views + ([hypothesis_view] if hypothesis_view else [])
     for view in carving_views:
         occupied &= _inside(view, *coords)
@@ -224,6 +245,15 @@ def augment_plan_with_visual_hull(
                      if part.render_visible), None)
     for part in updated.parts:
         part.render_visible = False
+    completion_source = (EvidenceSource.GENERATED_HYPOTHESIS
+                         if hypothesis_view is not None
+                         else EvidenceSource.FITTED_FROM_OBSERVATION)
+    completion_confidence = min(scores.values())
+    # Observed silhouettes tightly constrain their own projections, but not
+    # hidden surfaces. Never promote completion confidence above the global
+    # generated-hypothesis ceiling.
+    completion_confidence = min(0.5, 0.5 * completion_confidence)
+    unseen_view_risk = "medium" if hypothesis_view is not None else "high"
     hull = PlanPart(
         id="multiview_visual_hull",
         operator=OperatorCategory.FREEFORM,
@@ -231,10 +261,13 @@ def augment_plan_with_visual_hull(
         material=material if material is not None else MaterialSpec(),
         evidence=EvidencedValue(
             value={"view_ids": [view.view_id for view in views],
-                   "reprojection_iou": scores},
-            source=EvidenceSource.FITTED_FROM_OBSERVATION,
-            confidence=min(scores.values()),
-            note="voxel-carved intersection of calibrated observed silhouettes",
+                   "reprojection_iou": scores,
+                   "completion_hypothesis": (hypothesis_view.view_id
+                                             if hypothesis_view else None)},
+            source=completion_source,
+            confidence=completion_confidence,
+            note=("voxel-carved calibrated silhouettes; hidden surfaces remain "
+                  "ambiguous and require another view for confirmation"),
         ),
     )
     updated.parts.append(hull)
@@ -250,16 +283,24 @@ def augment_plan_with_visual_hull(
         "observed_view_reprojection_iou": scores,
         "source_edit_guide_parts": source_ids,
         "primary_observed_geometry_overwritten": False,
+        "angular_evidence_span_deg": max(
+            view.camera_azimuth_deg for view in views) - min(
+                view.camera_azimuth_deg for view in views),
+        "completion_confidence": completion_confidence,
+        "unseen_view_risk": unseen_view_risk,
         "generated_symmetry_hypothesis": (
             None if hypothesis_view is None else {
                 "view_id": hypothesis_view.view_id,
                 "camera_azimuth_deg": hypothesis_view.camera_azimuth_deg,
                 "source": EvidenceSource.SEMANTIC_PRIOR.value,
-                "note": ("primary support mirrored about the narrower "
-                         "enclosure face direction; not an observed view"),
+                "note": hypothesis_note + "; not an observed view",
             }),
     }
     result.joint_optimization = dict(result.joint_optimization)
     result.joint_optimization["visual_hull"] = dict(
         updated.metadata["multiview_visual_hull"])
+    if unseen_view_risk == "high":
+        result.warnings.append(
+            "visual hull is underconstrained outside observed azimuths; "
+            "supply another calibrated view before treating hidden geometry as exact")
     return updated, result, True

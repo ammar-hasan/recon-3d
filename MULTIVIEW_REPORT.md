@@ -4,43 +4,64 @@ Date: 2026-07-23
 
 ## Scope
 
-This evaluation reconstructs `box_01` from the primary view and the calibrated
-`+45°` view. The `+90°` image and mask are held out until after reconstruction.
+This evaluation reconstructs six manufactured-object families from the primary
+view and the calibrated `+45°` view. The `+90°` image and mask are held out
+until after reconstruction.
 The final `.blend` is rendered at exactly `+90°` with camera scale and offset
 fixed from the primary image; the evaluator does not search pose, scale, or
 alignment against the held-out target.
 
 ## Result
 
-| Measurement | Result |
-| --- | ---: |
-| Primary Blender silhouette IoU | **0.962** |
-| Primary visual-hull reprojection IoU | **0.914** |
-| `+45°` evidence-view reprojection IoU | **0.889** |
-| Held-out `+90°` silhouette IoU | **0.819** |
-| Held-out contour Chamfer distance | **0.0174** |
-| Held-out IoU ≥ 0.75 | **pass** |
+| Case / family | Primary IoU | Held-out `+90°` IoU | ≥ 0.75 | Completion hypothesis |
+| --- | ---: | ---: | :---: | --- |
+| `box_01` / enclosure | 0.962 | **0.903** | yes | planar symmetry |
+| `bottle_01` / revolution | 0.940 | **0.944** | yes | axial invariance |
+| `gear_01` / radial extrusion | 0.951 | **0.950** | yes | axial invariance |
+| `mug_01` / revolution + sweep | 0.942 | **0.847** | yes | planar symmetry |
+| `chair_01` / primitive assembly | 0.905 | 0.283 | no | none; high-risk warning |
+| `pipe_elbow_01` / sweep | 0.907 | 0.631 | no | planar symmetry |
 
-The exported mesh has 8,144 vertices and 16,284 faces in the symmetry-prior
-run. The semantic source parts remain in the `.blend` as hidden editable
-guides and are excluded from GLB/render output. `geometry/multiview.json`
-records the hull, observed-view scores, source guide IDs, and the generated
-symmetry view as `semantic_prior`; it also records that primary observed
-geometry was not overwritten.
+Median held-out silhouette IoU is **0.875**, above Eval 20's `≥ 0.75`
+median target. Four of six individual cases pass.
+
+| Case | Normalized surface Chamfer | Normal consistency | Chamfer ≤ 0.05 |
+| --- | ---: | ---: | :---: |
+| `box_01` | 0.102 | 0.435 | no |
+| `bottle_01` | 0.079 | 0.534 | no |
+| `gear_01` | **0.048** | 0.699 | yes |
+| `mug_01` | 0.092 | 0.443 | no |
+| `chair_01` | 0.067 | 0.661 | no |
+| `pipe_elbow_01` | 0.074 | 0.544 | no |
+
+Median normalized surface Chamfer is **0.077**, so the Eval 20 surface target
+is not met. The evaluator similarity-normalizes each 3,000-point surface
+sample, searches proper axis rotations, performs rigid ICP alignment, and then
+computes symmetric nearest-surface Chamfer. Volumetric IoU and partwise
+held-out accuracy are not yet measured.
+
+Semantic source parts remain in each `.blend` as hidden editable guides and
+are excluded from GLB/render output. `geometry/multiview.json` records the
+hull, observed-view scores, source guide IDs, angular evidence span, completion
+confidence, unseen-view risk, and any generated completion view as
+`semantic_prior`; it also records that primary observed geometry was not
+overwritten. Hidden completion confidence is capped below 0.5.
 
 ## Ablation
 
 The maximal two-view visual hull is underconstrained along the unseen
-direction. With the enclosure symmetry/compactness hypothesis disabled, the
-held-out IoU is **0.532**. Enabling the explicit source-labelled hypothesis
-raises it to **0.819** while preserving the primary score. This is a measured
-gain of **+0.287 IoU**.
+direction. With semantic completion disabled, held-out IoUs for
+box/bottle/gear/mug/chair/pipe are respectively
+`0.532 / 0.538 / 0.557 / 0.496 / 0.283 / 0.370`; median is **0.514**. With the
+source-labelled priors enabled, median rises to **0.875** (**+0.361**). Chair
+does not receive an unsupported prior and stays unchanged. Pipe improves to
+0.631 but remains below threshold.
 
 ## Reproduction
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m evals.benchmark.generate_benchmark \
-  --cases box_01 \
+  --cases box_01,bottle_01,gear_01,mug_01,chair_01,pipe_elbow_01 \
   --out projects/multiview_benchmark \
   --resolution 320 \
   --view-offsets 45,90 \
@@ -61,13 +82,14 @@ PYTHONPATH=. .venv/bin/python -m evals.multiview.run_multiview_eval \
 ```
 
 For the ablation, add
-`--config evals/ablations/no_multiview_box_symmetry.yaml` to the reconstruction
-command and use a different output directory.
+`--config evals/ablations/no_multiview_semantic_completion.yaml` to the
+reconstruction command and use a different output directory.
 
 ## Interpretation and remaining scope
 
-This closes the previous box-case gap where multiview metadata did not affect
-3D geometry. It does not establish cross-family multiview generalization.
-Additional held-out cases, full-intrinsics camera support, all EVAL ablations,
-opaque baselines, failure-detection evaluation, and human edit-task evaluation
-remain required by the repository's full success definition.
+This closes the previous gap where multiview metadata did not affect 3D
+geometry and reaches the Eval 20 median silhouette target across six families.
+The two individual failures are retained and labelled rather than hidden.
+Full-intrinsics camera support, held-out volumetric/part metrics, harder cases,
+all EVAL ablations, opaque baselines, formal confidence calibration, and human
+edit-task evaluation remain required by the full success definition.

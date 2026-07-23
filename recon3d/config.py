@@ -95,6 +95,7 @@ class MultiviewConfig(BaseModel):
     visual_hull_min_primary_iou: float = Field(default=0.80, ge=0.0, le=1.0)
     visual_hull_min_secondary_iou: float = Field(default=0.70, ge=0.0, le=1.0)
     visual_hull_box_symmetry_prior_enabled: bool = True
+    visual_hull_semantic_completion_enabled: bool = True
 
 
 class HypothesisConfig(BaseModel):
