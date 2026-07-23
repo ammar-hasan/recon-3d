@@ -548,6 +548,8 @@ class RunManifest(BaseModel):
     software: Dict[str, str] = {}    # python, blender, deps
     seeds: Dict[str, int] = {}
     stage_outputs: Dict[str, str] = {}
+    timings_seconds: Dict[str, float] = {}
+    resource_usage: Dict[str, Any] = {}
     started_at: str = ""
     finished_at: str = ""
     status: str = "running"          # running|success|partial_success|failed_validation|unsupported_input

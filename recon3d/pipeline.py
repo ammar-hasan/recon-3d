@@ -10,7 +10,9 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import resource
 import sys
+import time
 import traceback
 import uuid
 from pathlib import Path
@@ -52,6 +54,8 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
     manifest.config = json.loads(cfg.model_dump_json())
 
     quality = None
+    run_clock = time.perf_counter()
+    stage_clock = run_clock
     try:
         # Stage 1-3: input, segmentation, crop
         bundle = input_manager.load_input(spec)
@@ -78,12 +82,20 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
                 "warnings": list(seg.warnings) + quality_warnings})
             SchemaIO.save_json(
                 seg, project_dir / "segmentation" / "segmentation_result.json")
+        now = time.perf_counter()
+        manifest.timings_seconds["input_segmentation_crop"] = round(
+            now - stage_clock, 6)
+        stage_clock = now
 
         # Stage 4-6: preprocess, vectorize, cleanup
         layers_img = preprocess.preprocess(crop_rgba, crop_mask,
                                            str(project_dir / "segmentation"), cfg)
         layers = vectorize.vectorize(layers_img, str(project_dir / "traces"), cfg)
         layers = svg_cleanup.cleanup_layers(layers, str(project_dir / "traces"), cfg)
+        now = time.perf_counter()
+        manifest.timings_seconds["preprocess_vectorize_cleanup"] = round(
+            now - stage_clock, 6)
+        stage_clock = now
 
         # Stage 7-10: primitives, constraints, sketch graph, semantic parts
         prims = primitives.fit_primitives(layers, cfg)
@@ -93,6 +105,10 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         SchemaIO.save_json(
             graph.model_copy(update={"parts": [], "constraints": []}),
             project_dir / "geometry" / "fitted_primitives.json")
+        now = time.perf_counter()
+        manifest.timings_seconds["primitives_constraints_semantics"] = round(
+            now - stage_clock, 6)
+        stage_clock = now
 
         # Stage 11-14: camera, depth, operators, plan
         cam = camera.estimate_camera(graph, seg, crop_meta, spec, cfg)
@@ -144,6 +160,10 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         if errors:
             raise ValueError("construction plan invalid: " + "; ".join(errors))
         SchemaIO.save_yaml(plan, project_dir / "geometry" / "construction_plan.yaml")
+        now = time.perf_counter()
+        manifest.timings_seconds["camera_depth_multiview_planning"] = round(
+            now - stage_clock, 6)
+        stage_clock = now
 
         # Stage 15-16: Blender generation + execution
         script = blender_codegen.generate_blender_script(plan, str(project_dir / "blender"), cfg)
@@ -170,6 +190,10 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
                 raise RuntimeError(
                     "multiview-refined blender execution failed: "
                     + "; ".join(bman.errors))
+        now = time.perf_counter()
+        manifest.timings_seconds["blender_build_and_multiview_geometry"] = round(
+            now - stage_clock, 6)
+        stage_clock = now
 
         # Stage 17-18: validation + refinement
         val = validation.validate_reconstruction(bman, plan, seg, crop_meta,
@@ -184,6 +208,9 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
                 converged=val.passed, iterations=0)
         SchemaIO.save_yaml(plan, project_dir / "geometry" / "construction_plan.yaml")
         SchemaIO.save_json(rlog, project_dir / "validation" / "refinement_log.json")
+        now = time.perf_counter()
+        manifest.timings_seconds["validation_and_refinement"] = round(
+            now - stage_clock, 6)
 
         manifest.status = _result_status(
             val.passed, quality.risk if quality is not None else "high")
@@ -201,6 +228,16 @@ def run_pipeline(spec: InputSpec, cfg: PipelineConfig) -> RunManifest:
         manifest.stage_outputs["error"] = f"{type(exc).__name__}: {exc}"
         traceback.print_exc()
     finally:
+        manifest.timings_seconds["total"] = round(
+            time.perf_counter() - run_clock, 6)
+        peak_rss = float(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss)
+        # macOS reports bytes; Linux reports KiB.
+        divisor = 1024.0 * 1024.0 if sys.platform == "darwin" else 1024.0
+        manifest.resource_usage = {
+            "peak_process_rss_mb": round(peak_rss / divisor, 3),
+            "gpu_memory_mb": None,
+            "model_calls": 0,
+        }
         manifest.finished_at = datetime.datetime.now().isoformat(timespec="seconds")
         SchemaIO.save_json(manifest, project_dir / "manifest.json")
         try:

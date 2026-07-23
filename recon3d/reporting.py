@@ -64,6 +64,22 @@ def generate_report(project_dir: str | Path) -> str:
             ]
         lines.append("")
 
+        if manifest.timings_seconds or manifest.resource_usage:
+            lines += ["## Runtime and Resources", ""]
+            for name, seconds in manifest.timings_seconds.items():
+                lines.append(f"- `{name}`: {seconds:.3f} s")
+            peak = manifest.resource_usage.get("peak_process_rss_mb")
+            lines.append(
+                "- peak process RSS: %s"
+                % ("not measured" if peak is None else f"{float(peak):.1f} MiB"))
+            gpu = manifest.resource_usage.get("gpu_memory_mb")
+            lines.append(
+                "- GPU memory: %s"
+                % ("not measured" if gpu is None else f"{float(gpu):.1f} MiB"))
+            lines.append(
+                f"- model calls: {manifest.resource_usage.get('model_calls', 'not measured')}")
+            lines.append("")
+
     # --- input quality ----------------------------------------------------
     quality_path = pdir / "input" / "quality_assessment.json"
     if quality_path.exists():
