@@ -29,6 +29,7 @@ import os
 import sys
 import traceback
 import bpy
+import mathutils
 import numpy as np
 
 ARGV = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
@@ -72,9 +73,12 @@ try:
 
     root = next(o for o in bpy.data.objects if o.get("recon3d_object_id"))
     base = P["base_object_rotation_deg"]
-    root.rotation_euler = (math.radians(float(base[0])),
-                           math.radians(float(base[1]) - float(P["azimuth_deg"])),
-                           math.radians(float(base[2])))
+    if P.get("camera_matrix_world") is not None:
+        root.rotation_euler = (0.0, 0.0, 0.0)
+    else:
+        root.rotation_euler = (math.radians(float(base[0])),
+                               math.radians(float(base[1]) - float(P["azimuth_deg"])),
+                               math.radians(float(base[2])))
     camera_data = bpy.data.cameras.new("recon3d_heldout_camera")
     camera_data.type = P["camera_type"]
     if camera_data.type == "ORTHO":
@@ -85,8 +89,11 @@ try:
         camera_data.sensor_fit = "HORIZONTAL"
     camera = bpy.data.objects.new("recon3d_heldout_camera", camera_data)
     scene.collection.objects.link(camera)
-    camera.location = tuple(float(v) for v in P["camera_location"])
-    camera.rotation_euler = (0.0, 0.0, 0.0)
+    if P.get("camera_matrix_world") is not None:
+        camera.matrix_world = mathutils.Matrix(P["camera_matrix_world"])
+    else:
+        camera.location = tuple(float(v) for v in P["camera_location"])
+        camera.rotation_euler = (0.0, 0.0, 0.0)
     scene.camera = camera
     scene.render.filepath = P["output_path"]
     bpy.ops.render.render(write_still=True)
@@ -203,6 +210,31 @@ def fixed_camera_from_primary(seg: SegmentationResult,
     }
 
 
+def exact_camera_in_primary_frame(primary: Dict, camera: Dict,
+                                  object_width_px: float) -> Dict:
+    """Map a benchmark camera into the normalized primary-camera hull frame."""
+    primary_matrix = np.asarray(primary["camera_matrix_world"], dtype=float)
+    camera_matrix = np.asarray(camera["camera_matrix_world"], dtype=float)
+    target = np.asarray(primary["look_at_target"], dtype=float)
+    primary_rotation = primary_matrix[:3, :3]
+    distance = float(np.linalg.norm(primary_matrix[:3, 3] - target))
+    scale = distance * float(object_width_px) / float(primary["focal_length_px"])
+    rotation = primary_rotation.T @ camera_matrix[:3, :3]
+    center = (primary_rotation.T @ (camera_matrix[:3, 3] - target)
+              / scale)
+    matrix = np.eye(4, dtype=float)
+    matrix[:3, :3] = rotation
+    matrix[:3, 3] = center
+    return {
+        "camera_type": "PERSP",
+        "ortho_scale": None,
+        "lens_mm": float(camera["lens_mm"]),
+        "sensor_width_mm": float(camera["sensor_width_mm"]),
+        "camera_location": center.tolist(),
+        "camera_matrix_world": matrix.tolist(),
+    }
+
+
 def _base_rotation(plan: ConstructionPlan) -> list[float]:
     # Visual-hull vertices are already expressed in the primary camera frame;
     # parametric constructions retain their calibrated canonical-object pose.
@@ -313,7 +345,16 @@ def evaluate_heldout(case_dir: str, project_dir: str,
     primary_camera_path = case / "camera.json"
     primary_camera = (json.loads(primary_camera_path.read_text())
                       if primary_camera_path.is_file() else None)
-    framing = fixed_camera_from_primary(seg, target.shape, primary_camera)
+    hull_metadata = (plan.metadata or {}).get("multiview_visual_hull") or {}
+    use_exact_camera = (
+        hull_metadata.get("projection_model") == "exact_perspective"
+        and primary_camera is not None)
+    if use_exact_camera:
+        framing = exact_camera_in_primary_frame(
+            primary_camera, camera, max(1, seg.bbox[2] - seg.bbox[0]))
+    else:
+        framing = fixed_camera_from_primary(seg, target.shape, primary_camera)
+        framing["camera_matrix_world"] = None
     output_path = project / "validation" / ("heldout_%s.png" % heldout_view)
     reference_copy = project / "validation" / "heldout_reference.glb"
     shutil.copy2(case / "reference.glb", reference_copy)
@@ -328,6 +369,7 @@ def evaluate_heldout(case_dir: str, project_dir: str,
         "lens_mm": framing["lens_mm"],
         "sensor_width_mm": framing["sensor_width_mm"],
         "camera_location": framing["camera_location"],
+        "camera_matrix_world": framing["camera_matrix_world"],
         "output_path": str(output_path),
         "reference_glb": str(reference_copy),
         "surface_samples_path": str(surface_samples_path),
@@ -350,6 +392,9 @@ def evaluate_heldout(case_dir: str, project_dir: str,
         "heldout_view": heldout_view,
         "heldout_relative_azimuth_deg": azimuth,
         "camera_policy": (
+            "full held-out intrinsics/extrinsics transformed into the normalized "
+            "primary-camera hull frame; no held-out alignment"
+            if framing["camera_matrix_world"] is not None else
             "primary exact intrinsics and bbox-derived scale/offset; "
             "held-out azimuth exact; no held-out alignment"
             if framing["camera_type"] == "PERSP" else

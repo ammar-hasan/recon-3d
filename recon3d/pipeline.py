@@ -264,6 +264,10 @@ def main(argv: list[str] | None = None) -> int:
         "--view-azimuth", action="append", type=float, default=None,
         help="calibrated camera-orbit azimuth in degrees; repeat once per --image",
     )
+    ap.add_argument(
+        "--camera-json", action="append", default=None,
+        help="full camera calibration JSON; repeat once per --image",
+    )
     ap.add_argument("--out", default="projects/run")
     ap.add_argument("--config", default=None)
     args = ap.parse_args(argv)
@@ -279,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
         known_dimension=args.dimension,
         known_dimension_axis=args.dimension_axis,
         view_azimuths_deg=args.view_azimuth,
+        camera_calibration_paths=args.camera_json,
         output_dir=args.out,
     )
     manifest = run_pipeline(spec, cfg)

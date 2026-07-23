@@ -66,6 +66,7 @@ class InputSpec(BaseModel):
     known_dimension: Optional[float] = None              # physical units
     known_dimension_axis: Optional[str] = None           # "width"|"height"|"depth"|"diameter"
     view_azimuths_deg: Optional[List[float]] = None       # one calibrated orbit angle per image
+    camera_calibration_paths: Optional[List[str]] = None  # one camera JSON per image
     output_dir: str = "projects/run"
 
 
@@ -348,6 +349,7 @@ class MultiViewObservation(BaseModel):
     object_bbox: Optional[Tuple[int, int, int, int]] = None
     segmentation_confidence: float = 0.0
     camera: Optional[CameraEstimate] = None
+    camera_calibration: Optional[Dict[str, Any]] = None
     scale_to_primary: EvidencedValue = Field(default_factory=EvidencedValue)
     status: str = "success"
     warnings: List[str] = []
@@ -366,6 +368,7 @@ class CrossViewPartMatch(BaseModel):
 class MultiViewResult(BaseModel):
     enabled: bool = False
     primary_view_id: str = "view_000"
+    primary_camera_calibration: Optional[Dict[str, Any]] = None
     observations: List[MultiViewObservation] = []
     matches: List[CrossViewPartMatch] = []
     shared_part_graph: Dict[str, List[Dict[str, Any]]] = {}

@@ -46,6 +46,35 @@ sample, searches proper axis rotations, performs rigid ICP alignment, and then
 computes symmetric nearest-surface Chamfer. Volumetric IoU and partwise
 held-out accuracy are not yet measured.
 
+### Full intrinsics/extrinsics path
+
+The CLI now accepts one repeated `--camera-json` per input image. Reconstruction
+retains those records in `geometry/multiview.json`, transforms every camera
+into a normalized primary-camera frame, and performs perspective silhouette
+carving with focal length, principal point, elevation, and camera rotation.
+Generated completion views continue the observed calibrated orbit but remain
+labelled semantic hypotheses. The held-out evaluator applies the same frame
+transform to the unused target camera. No held-out mask is used for alignment.
+
+A matched six-family check compares this path with the preceding azimuth-only
+results under the same reconstruction and scoring settings:
+
+| Case | Azimuth-only IoU | Full-camera IoU | Azimuth-only Chamfer | Full-camera Chamfer |
+| --- | ---: | ---: | ---: | ---: |
+| `box_01` | 0.796 | **0.931** | 0.102 | **0.094** |
+| `bottle_01` | 0.869 | **0.897** | **0.079** | 0.080 |
+| `gear_01` | 0.754 | **0.910** | **0.049** | **0.049** |
+| `mug_01` | 0.760 | **0.916** | 0.093 | **0.090** |
+| `chair_01` | 0.332 | 0.332 | 0.066 | 0.066 |
+| `pipe_elbow_01` | 0.652 | **0.730** | 0.076 | **0.075** |
+
+Median held-out IoU rises from **0.757** to **0.903**. Median normalized
+surface Chamfer remains **0.077**. Four of six cases pass IoU ≥ 0.75 and
+`gear_01` passes both measured thresholds. Chair's exact hull missed the
+primary reprojection gate (0.790 versus 0.800), so the recorded azimuth-only
+fallback preserved its prior result. These six cases validate the new camera
+path but do not replace the broader 18-case result above.
+
 ## Uncertainty and failure detection
 
 The suite aggregator reads completion confidence and unseen-view risk from the
@@ -173,6 +202,16 @@ PYTHONPATH=. .venv/bin/python -m recon3d.pipeline \
   --view-azimuth 0 \
   --view-azimuth 45 \
   --out projects/multiview_box_visual_hull
+
+# Full camera calibration may be supplied instead of --view-azimuth:
+PYTHONPATH=. .venv/bin/python -m recon3d.pipeline \
+  --image projects/multiview_benchmark_full/box_01/input.png \
+  --image projects/multiview_benchmark_full/box_01/views/view_001/input.png \
+  --mask projects/multiview_benchmark_full/box_01/mask.png \
+  --label box_01 \
+  --camera-json projects/multiview_benchmark_full/box_01/camera.json \
+  --camera-json projects/multiview_benchmark_full/box_01/views/view_001/camera.json \
+  --out projects/multiview_exact_camera_box_01
 
 PYTHONPATH=. .venv/bin/python -m evals.multiview.run_multiview_eval \
   --case projects/multiview_benchmark_full/box_01 \

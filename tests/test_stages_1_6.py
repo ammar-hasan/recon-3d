@@ -5,6 +5,7 @@ downloads model weights).
 """
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -24,6 +25,7 @@ from recon3d import (
 )
 from recon3d.config import PipelineConfig
 from recon3d.input_manager import InputError
+from recon3d.multiview import _calibration_azimuths
 from recon3d.schemas import InputSpec
 from recon3d.svg_cleanup import _point_to_polyline_dist
 
@@ -260,6 +262,51 @@ def test_hint_validation(tmp_path):
     invalid = spec.model_copy(update={"view_azimuths_deg": [0.0, float("nan")]})
     with pytest.raises(InputError, match="must be finite"):
         input_manager.load_input(invalid)
+
+    calibration = {
+        "focal_length_px": 100.0,
+        "principal_point_px": [W / 2, H / 2],
+        "camera_matrix_world": np.eye(4).tolist(),
+        "look_at_target": [0.0, 0.0, 0.0],
+    }
+    calibration_path = tmp_path / "camera.json"
+    calibration_path.write_text(json.dumps(calibration))
+    calibrated = spec.model_copy(update={
+        "camera_calibration_paths": [str(calibration_path)]})
+    with pytest.raises(InputError, match="one JSON per image"):
+        input_manager.load_input(calibrated)
+    calibrated = calibrated.model_copy(update={
+        "camera_calibration_paths": [str(calibration_path)] * 2})
+    assert input_manager.load_input(calibrated).spec.camera_calibration_paths
+
+    malformed_path = tmp_path / "bad_camera.json"
+    malformed_path.write_text(json.dumps({"focal_length_px": -1}))
+    malformed = calibrated.model_copy(update={
+        "camera_calibration_paths": [str(malformed_path)] * 2})
+    with pytest.raises(InputError, match="missing required fields"):
+        input_manager.load_input(malformed)
+
+    scalar_path = tmp_path / "scalar_camera.json"
+    scalar_path.write_text("42")
+    scalar = calibrated.model_copy(update={
+        "camera_calibration_paths": [str(scalar_path)] * 2})
+    with pytest.raises(InputError, match="JSON object"):
+        input_manager.load_input(scalar)
+
+
+def test_full_camera_calibration_derives_relative_orbit_azimuth():
+    first = np.eye(4)
+    first[:3, 3] = [1.0, 0.0, 0.5]
+    second = np.eye(4)
+    second[:3, 3] = [np.sqrt(0.5), np.sqrt(0.5), 0.5]
+    calibrations = [{
+        "camera_matrix_world": matrix.tolist(),
+        "look_at_target": [0.0, 0.0, 0.0],
+    } for matrix in (first, second)]
+    assert np.allclose(_calibration_azimuths(calibrations), [0.0, 45.0])
+    calibrations[0]["relative_azimuth_deg"] = 10.0
+    calibrations[1]["relative_azimuth_deg"] = 55.0
+    assert _calibration_azimuths(calibrations) == [10.0, 55.0]
 
 # ---------------------------------------------------------------------------
 # Stage 2: segmentation

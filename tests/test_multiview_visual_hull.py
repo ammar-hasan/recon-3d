@@ -7,6 +7,7 @@ from recon3d.config import PipelineConfig
 from recon3d.construction_plan import validate_plan
 from recon3d.multiview_visual_hull import (
     _View,
+    _inside,
     _semantic_completion_hypothesis,
     augment_plan_with_visual_hull,
 )
@@ -145,3 +146,78 @@ def test_semantic_completion_distinguishes_axial_and_planar_priors():
     assert planar.view_id == "generated_planar_symmetry"
     assert np.array_equal(planar.mask, cv2.flip(primary.mask, 1))
     assert "mirrored" in planar_note
+
+
+def test_exact_perspective_view_projects_in_primary_camera_frame():
+    mask = np.zeros((128, 128), np.uint8)
+    mask[63:66, 63:66] = 1
+    view = _View(
+        "view_000", mask, (40, 40, 88, 88), 0.0, 48.0,
+        camera_center_plan=np.asarray([0.0, 0.0, 2.0]),
+        camera_rotation_plan=np.eye(3), focal_length_px=100.0,
+        principal_point_px=(64.0, 64.0))
+    assert bool(_inside(view, np.asarray([0.0]), np.asarray([0.0]),
+                        np.asarray([0.0]))[0])
+    assert not bool(_inside(view, np.asarray([0.25]), np.asarray([0.0]),
+                            np.asarray([0.0]))[0])
+
+
+def test_semantic_completion_continues_exact_calibrated_orbit():
+    mask = np.ones((32, 32), np.uint8)
+    primary = _View(
+        "view_000", mask, (6, 8, 26, 24), 0.0, 20.0,
+        camera_center_plan=np.asarray([0.0, 0.0, 2.0]),
+        camera_rotation_plan=np.eye(3), focal_length_px=100.0,
+        principal_point_px=(16.0, 16.0))
+    step = np.asarray([[0.0, 0.0, 1.0],
+                       [0.0, 1.0, 0.0],
+                       [-1.0, 0.0, 0.0]])
+    secondary = _View(
+        "view_001", mask, (10, 8, 22, 24), 45.0, 20.0,
+        camera_center_plan=step @ primary.camera_center_plan,
+        camera_rotation_plan=step, focal_length_px=100.0,
+        principal_point_px=(16.0, 16.0))
+    generated, _ = _semantic_completion_hypothesis(
+        ConstructionPlan(object_id="bottle"), [primary, secondary],
+        PipelineConfig())
+    assert generated.exact_perspective
+    assert np.allclose(generated.camera_center_plan,
+                       step @ step @ primary.camera_center_plan)
+    assert np.allclose(generated.camera_rotation_plan, step @ step)
+
+
+def test_exact_hull_rejection_falls_back_to_calibrated_azimuth(tmp_path):
+    primary_path = tmp_path / "primary.png"
+    side_path = tmp_path / "side.png"
+    primary_bbox = _write_box_mask(primary_path, 80, 64)
+    side_bbox = _write_box_mask(side_path, 40, 64)
+    matrix = np.eye(4)
+    matrix[:3, 3] = [0.0, 0.0, 2.0]
+    calibration = {
+        "focal_length_px": 100.0,
+        "principal_point_px": [64.0, 64.0],
+        "camera_matrix_world": matrix.tolist(),
+        "look_at_target": [0.0, 0.0, 0.0],
+    }
+    observation = MultiViewObservation(
+        view_id="view_001", image_path=str(side_path), mask_path=str(side_path),
+        object_bbox=side_bbox, camera_calibration=calibration,
+        scale_to_primary=EvidencedValue(value=1.0, confidence=1.0))
+    result = MultiViewResult(
+        enabled=True, primary_camera_calibration=calibration,
+        observations=[observation],
+        relative_camera_poses={"view_001": EvidencedValue(
+            value=[0.0, 45.0, 0.0], source=EvidenceSource.USER_SUPPLIED,
+            confidence=1.0)})
+    plan = ConstructionPlan(object_id="box", parts=[PlanPart(
+        id="guide", operator=OperatorCategory.PRIMITIVE,
+        primitive_shape="cube")], camera=CameraEstimate())
+    cfg = PipelineConfig()
+    cfg.multiview.visual_hull_grid_size = 32
+    updated, result, used = augment_plan_with_visual_hull(
+        plan, result, _seg(primary_path, primary_bbox), cfg)
+    assert used
+    metadata = updated.metadata["multiview_visual_hull"]
+    assert metadata["projection_model"] == "relative_azimuth_orthographic"
+    assert metadata["exact_camera_fallback"] is True
+    assert any("falling back" in warning for warning in result.warnings)

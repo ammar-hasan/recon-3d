@@ -8,6 +8,7 @@ primary geometry is never overwritten by a secondary view.
 """
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import Dict, List, Tuple
@@ -99,6 +100,20 @@ def _rotation(cam: CameraEstimate) -> List[float]:
     return [float(v) for v in value] if isinstance(value, list) and len(value) == 3 else [0.0] * 3
 
 
+def _calibration_azimuths(calibrations: List[Dict]) -> List[float]:
+    """Return declared orbit azimuths or derive them from supplied centres."""
+    if all("relative_azimuth_deg" in item for item in calibrations):
+        return [float(item["relative_azimuth_deg"]) for item in calibrations]
+    target = np.asarray(calibrations[0]["look_at_target"], dtype=float)
+    centres = [np.asarray(item["camera_matrix_world"], dtype=float)[:3, 3]
+               - target for item in calibrations]
+    absolute = [math.degrees(math.atan2(center[1], center[0]))
+                for center in centres]
+    primary = absolute[0]
+    return [((angle - primary + 180.0) % 360.0) - 180.0
+            for angle in absolute]
+
+
 def fuse_multiview(
     bundle: InputBundle,
     primary_graph: SketchGraph,
@@ -116,6 +131,11 @@ def fuse_multiview(
     root = Path(out_dir)
     root.mkdir(parents=True, exist_ok=True)
     result = MultiViewResult(enabled=True)
+    calibrations = None
+    if spec.camera_calibration_paths is not None:
+        calibrations = [json.loads(Path(path).read_text())
+                        for path in spec.camera_calibration_paths]
+        result.primary_camera_calibration = calibrations[0]
     all_matches: List[CrossViewPartMatch] = []
     scale_samples = []
     residuals = []
@@ -131,11 +151,16 @@ def fuse_multiview(
             "view_azimuths_deg": ([spec.view_azimuths_deg[index]]
                                    if spec.view_azimuths_deg is not None
                                    else None),
+            "camera_calibration_paths": (
+                [spec.camera_calibration_paths[index]]
+                if spec.camera_calibration_paths is not None else None),
         })
         view_bundle = InputBundle(spec=view_spec, images=[loaded],
                                   warnings=list(bundle.warnings))
         observation = MultiViewObservation(view_id=view_id,
                                            image_path=loaded.path)
+        if calibrations is not None:
+            observation.camera_calibration = calibrations[index]
         try:
             seg = segmentation.segment(view_bundle, str(view_root / "segmentation"), cfg)
             SchemaIO.save_json(seg, view_root / "segmentation" / "segmentation_result.json")
@@ -162,6 +187,9 @@ def fuse_multiview(
             residuals.extend(m.geometric_cost for m in matches)
 
             calibrated = spec.view_azimuths_deg
+            calibration_azimuths = (_calibration_azimuths(calibrations)
+                                    if calibrations is not None else None)
+            calibrated = calibrated or calibration_azimuths
             if calibrated is not None and index < len(calibrated):
                 relative = [0.0, float(calibrated[index] - calibrated[0]), 0.0]
                 baseline = abs(relative[1])

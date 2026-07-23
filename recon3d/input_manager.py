@@ -6,6 +6,7 @@ validates optional box / point / mask hints.
 """
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 from typing import List, Optional, Tuple
@@ -124,6 +125,49 @@ def load_input(spec: InputSpec) -> InputBundle:
     if (spec.view_azimuths_deg is not None
             and not all(math.isfinite(v) for v in spec.view_azimuths_deg)):
         raise InputError("view_azimuths_deg values must be finite")
+    if (spec.camera_calibration_paths is not None
+            and len(spec.camera_calibration_paths) != len(spec.image_paths)):
+        raise InputError(
+            "camera_calibration_paths must contain one JSON per image "
+            "(%d images, %d calibrations)" % (
+                len(spec.image_paths), len(spec.camera_calibration_paths)))
+    if spec.camera_calibration_paths is not None:
+        required = {"focal_length_px", "principal_point_px",
+                    "camera_matrix_world", "look_at_target"}
+        for calibration_path in spec.camera_calibration_paths:
+            path = Path(calibration_path)
+            if not path.is_file():
+                raise InputError("camera calibration file not found: %s" % path)
+            try:
+                calibration = json.loads(path.read_text())
+            except Exception as exc:
+                raise InputError(
+                    "invalid camera calibration JSON %s (%s)" % (path, exc)) from exc
+            if not isinstance(calibration, dict):
+                raise InputError(
+                    "camera calibration %s must contain a JSON object" % path)
+            missing = sorted(required - set(calibration))
+            if missing:
+                raise InputError(
+                    "camera calibration %s missing required fields: %s"
+                    % (path, ", ".join(missing)))
+            try:
+                focal = float(calibration["focal_length_px"])
+                principal = np.asarray(calibration["principal_point_px"], dtype=float)
+                matrix = np.asarray(calibration["camera_matrix_world"], dtype=float)
+                target = np.asarray(calibration["look_at_target"], dtype=float)
+            except (TypeError, ValueError) as exc:
+                raise InputError(
+                    "camera calibration %s contains non-numeric values" % path) from exc
+            if (not math.isfinite(focal) or focal <= 0.0
+                    or principal.shape != (2,) or matrix.shape != (4, 4)
+                    or target.shape != (3,)
+                    or not np.all(np.isfinite(principal))
+                    or not np.all(np.isfinite(matrix))
+                    or not np.all(np.isfinite(target))):
+                raise InputError(
+                    "camera calibration %s has invalid focal length or array shapes"
+                    % path)
     input_dir = Path(spec.output_dir) / "input"
     input_dir.mkdir(parents=True, exist_ok=True)
 

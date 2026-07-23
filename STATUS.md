@@ -16,12 +16,17 @@ definition is still in progress because `EVAL.md` requires more than the MVP.
 - Blender execution, independent `.blend` reopen, and GLB validity: **18/18**.
 - Mean major visible-part recall: **1.000**.
 - Safety violations: **0**.
-- Regression suite: **274 passed, 1 skipped**, including real Blender build,
+- Regression suite: **279 passed, 1 skipped**, including real Blender build,
   validation, and refinement tests.
 - Calibrated two-evidence-view `box_01`: primary IoU **0.961** and genuinely
   held-out `+90°` IoU **0.796** with exact primary intrinsics (target ≥ 0.75).
 - Full 18-case calibrated suite: median held-out IoU **0.669**, below Eval 20's
   silhouette target ≥ 0.75; 7/18 individual cases pass.
+- Optional full-camera perspective carving is now implemented and measured on
+  a matched six-family subset: median held-out IoU improves from **0.757** to
+  **0.903**, median Chamfer remains **0.077**, and rejected exact hulls safely
+  fall back to the supplied azimuth model. The broader 18-case rerun remains
+  open, so this subset does not supersede the full-suite result.
 - The same suite's median normalized surface Chamfer is **0.074**, above Eval
   20's ≤ 0.05 target; 3/18 pass Chamfer and only `gear_01` passes both
   measured targets.

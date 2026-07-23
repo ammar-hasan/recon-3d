@@ -28,6 +28,17 @@ class _View:
     bbox: Tuple[int, int, int, int]
     camera_azimuth_deg: float
     pixels_per_unit: float
+    camera_center_plan: Optional[np.ndarray] = None
+    camera_rotation_plan: Optional[np.ndarray] = None
+    focal_length_px: Optional[float] = None
+    principal_point_px: Optional[Tuple[float, float]] = None
+
+    @property
+    def exact_perspective(self) -> bool:
+        return (self.camera_center_plan is not None
+                and self.camera_rotation_plan is not None
+                and self.focal_length_px is not None
+                and self.principal_point_px is not None)
 
 
 def _read_mask(path: str, dilation: int) -> Optional[np.ndarray]:
@@ -56,7 +67,10 @@ def _calibrated_views(result: MultiViewResult, primary: SegmentationResult,
         return []
     pbbox = tuple(int(v) for v in primary.bbox)
     pwidth = max(1.0, float(pbbox[2] - pbbox[0]))
-    views = [_View("view_000", pmask, pbbox, 0.0, pwidth)]
+    exact = result.primary_camera_calibration
+    primary_kwargs = _exact_camera_kwargs(exact, exact, pwidth)
+    views = [_View("view_000", pmask, pbbox, 0.0, pwidth,
+                   **primary_kwargs)]
     for observation in result.observations:
         pose = result.relative_camera_poses.get(observation.view_id)
         if (observation.status != "success" or not observation.mask_path
@@ -70,10 +84,42 @@ def _calibrated_views(result: MultiViewResult, primary: SegmentationResult,
         scale = observation.scale_to_primary.value
         if bbox is None or not isinstance(scale, (int, float)) or scale <= 0:
             continue
+        camera_kwargs = _exact_camera_kwargs(
+            result.primary_camera_calibration,
+            observation.camera_calibration, pwidth)
         views.append(_View(
             observation.view_id, mask, tuple(int(v) for v in bbox),
-            float(pose.value[1]), pwidth / float(scale)))
+            float(pose.value[1]), pwidth / float(scale), **camera_kwargs))
     return views
+
+
+def _exact_camera_kwargs(primary: Optional[dict], camera: Optional[dict],
+                         primary_width_px: float) -> dict:
+    """Express a calibrated Blender camera in the primary camera frame."""
+    if primary is None or camera is None:
+        return {}
+    try:
+        primary_matrix = np.asarray(primary["camera_matrix_world"], dtype=float)
+        camera_matrix = np.asarray(camera["camera_matrix_world"], dtype=float)
+        target = np.asarray(primary["look_at_target"], dtype=float)
+        primary_center = primary_matrix[:3, 3]
+        primary_rotation = primary_matrix[:3, :3]
+        distance = float(np.linalg.norm(primary_center - target))
+        scale = distance * primary_width_px / float(primary["focal_length_px"])
+        if scale <= 1e-12:
+            return {}
+        center = primary_rotation.T @ (camera_matrix[:3, 3] - target) / scale
+        rotation = primary_rotation.T @ camera_matrix[:3, :3]
+        principal = tuple(float(v) for v in camera["principal_point_px"])
+        focal = float(camera["focal_length_px"])
+    except (KeyError, TypeError, ValueError, IndexError):
+        return {}
+    return {
+        "camera_center_plan": center,
+        "camera_rotation_plan": rotation,
+        "focal_length_px": focal,
+        "principal_point_px": principal,
+    }
 
 
 def _semantic_completion_hypothesis(
@@ -103,7 +149,8 @@ def _semantic_completion_hypothesis(
             and any(token in label for token in axial)):
         return (_View(
             "generated_axial_invariance", primary.mask, primary.bbox,
-            2.0 * angle, primary.pixels_per_unit),
+            2.0 * angle, primary.pixels_per_unit,
+            **_extrapolated_camera_kwargs(primary, secondary)),
             "axial silhouette invariance from object semantics")
 
     enclosure = ("box", "enclosure", "cabinet", "case")
@@ -121,12 +168,34 @@ def _semantic_completion_hypothesis(
     flipped_bbox = (width - x1, y0, width - x0, y1)
     return (_View(
         "generated_planar_symmetry", flipped, flipped_bbox,
-        2.0 * angle, primary.pixels_per_unit),
+        2.0 * angle, primary.pixels_per_unit,
+        **_extrapolated_camera_kwargs(primary, secondary)),
         "primary silhouette mirrored about an observed narrow symmetry plane")
+
+
+def _extrapolated_camera_kwargs(primary: _View, secondary: _View) -> dict:
+    """Continue one calibrated orbit step for a generated completion view."""
+    if not (primary.exact_perspective and secondary.exact_perspective):
+        return {}
+    orbit_step = (secondary.camera_rotation_plan
+                  @ primary.camera_rotation_plan.T)
+    return {
+        "camera_center_plan": orbit_step @ secondary.camera_center_plan,
+        "camera_rotation_plan": orbit_step @ secondary.camera_rotation_plan,
+        "focal_length_px": secondary.focal_length_px,
+        "principal_point_px": secondary.principal_point_px,
+    }
 
 
 def _inside(view: _View, x: np.ndarray, y: np.ndarray,
             z: np.ndarray) -> np.ndarray:
+    if view.exact_perspective:
+        px, py, valid = _perspective_pixels(view, x, y, z)
+        h, w = view.mask.shape
+        valid &= (px >= 0) & (px < w) & (py >= 0) & (py < h)
+        result = np.zeros(px.shape, dtype=bool)
+        result[valid] = view.mask[py[valid], px[valid]] > 0
+        return result
     # A +azimuth camera orbit is the same silhouette as a -azimuth object
     # yaw in the fixed primary camera.
     yaw = math.radians(-view.camera_azimuth_deg)
@@ -142,18 +211,38 @@ def _inside(view: _View, x: np.ndarray, y: np.ndarray,
     return result
 
 
+def _perspective_pixels(view: _View, x: np.ndarray, y: np.ndarray,
+                        z: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    shape = x.shape
+    points = np.column_stack((x.ravel(), y.ravel(), z.ravel()))
+    local = ((points - view.camera_center_plan)
+             @ view.camera_rotation_plan)
+    depth = -local[:, 2]
+    valid = depth > 1e-8
+    safe_depth = np.where(valid, depth, 1.0)
+    cx, cy = view.principal_point_px
+    px = np.rint(cx + view.focal_length_px * local[:, 0] / safe_depth)
+    py = np.rint(cy - view.focal_length_px * local[:, 1] / safe_depth)
+    return (px.astype(np.int32).reshape(shape),
+            py.astype(np.int32).reshape(shape), valid.reshape(shape))
+
+
 def _project_occupancy(occupied: np.ndarray, coords: Tuple[np.ndarray, ...],
                        view: _View) -> np.ndarray:
     x, y, z = (axis[occupied] for axis in coords)
-    yaw = math.radians(-view.camera_azimuth_deg)
-    projected_x = math.cos(yaw) * x + math.sin(yaw) * z
-    x0, y0, x1, y1 = view.bbox
-    cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
-    px = np.rint(cx + projected_x * view.pixels_per_unit).astype(np.int32)
-    py = np.rint(cy - y * view.pixels_per_unit).astype(np.int32)
+    if view.exact_perspective:
+        px, py, valid = _perspective_pixels(view, x, y, z)
+    else:
+        yaw = math.radians(-view.camera_azimuth_deg)
+        projected_x = math.cos(yaw) * x + math.sin(yaw) * z
+        x0, y0, x1, y1 = view.bbox
+        cx, cy = (x0 + x1) * 0.5, (y0 + y1) * 0.5
+        px = np.rint(cx + projected_x * view.pixels_per_unit).astype(np.int32)
+        py = np.rint(cy - y * view.pixels_per_unit).astype(np.int32)
+        valid = np.ones(px.shape, dtype=bool)
     rendered = np.zeros_like(view.mask, dtype=np.uint8)
-    valid = ((px >= 0) & (px < rendered.shape[1])
-             & (py >= 0) & (py < rendered.shape[0]))
+    valid &= ((px >= 0) & (px < rendered.shape[1])
+              & (py >= 0) & (py < rendered.shape[0]))
     rendered[py[valid], px[valid]] = 1
     # One voxel spans several image pixels. Expand point samples to their
     # conservative projected footprint before evaluating the silhouette.
@@ -179,6 +268,12 @@ def _mesh(occupied: np.ndarray, ranges: Tuple[np.ndarray, ...]
     vertices += origin
     return (np.round(vertices, 6).tolist(),
             faces.astype(np.int32).tolist())
+
+
+def _azimuth_only_views(views: List[_View]) -> List[_View]:
+    return [_View(view.view_id, view.mask, view.bbox,
+                  view.camera_azimuth_deg, view.pixels_per_unit)
+            for view in views]
 
 
 def augment_plan_with_visual_hull(
@@ -208,38 +303,55 @@ def augment_plan_with_visual_hull(
         np.linspace(-depth / 2.0, depth / 2.0, grid, dtype=np.float32),
     )
     coords = np.meshgrid(*ranges, indexing="ij")
-    occupied = np.ones((grid, grid, grid), dtype=bool)
-    hypothesis_view, hypothesis_note = _semantic_completion_hypothesis(
-        plan, views, cfg)
-    carving_views = views + ([hypothesis_view] if hypothesis_view else [])
-    for view in carving_views:
-        occupied &= _inside(view, *coords)
-    if int(occupied.sum()) < 8:
-        result.warnings.append(
-            "calibrated visual hull rejected: silhouette intersection is empty")
-        return plan, result, False
-
-    scores = {
-        view.view_id: _iou(view.mask, _project_occupancy(occupied, coords, view))
-        for view in views
-    }
-    if (scores["view_000"] < cfg.multiview.visual_hull_min_primary_iou
-            or any(scores[v.view_id]
-                   < cfg.multiview.visual_hull_min_secondary_iou
-                   for v in views[1:])):
-        result.warnings.append(
-            "calibrated visual hull rejected: observed-view reprojection below "
-            "threshold (%s)" % ", ".join(
-                "%s=%.3f" % item for item in sorted(scores.items())))
+    exact_camera_fallback = False
+    while True:
+        occupied = np.ones((grid, grid, grid), dtype=bool)
+        hypothesis_view, hypothesis_note = _semantic_completion_hypothesis(
+            plan, views, cfg)
+        carving_views = views + ([hypothesis_view] if hypothesis_view else [])
+        for view in carving_views:
+            occupied &= _inside(view, *coords)
+        scores = {
+            view.view_id: _iou(
+                view.mask, _project_occupancy(occupied, coords, view))
+            for view in views
+        } if int(occupied.sum()) >= 8 else {}
+        rejection = None
+        if not scores:
+            rejection = "silhouette intersection is empty"
+        elif (scores["view_000"] < cfg.multiview.visual_hull_min_primary_iou
+              or any(scores[v.view_id]
+                     < cfg.multiview.visual_hull_min_secondary_iou
+                     for v in views[1:])):
+            rejection = "observed-view reprojection below threshold (%s)" % ", ".join(
+                "%s=%.3f" % item for item in sorted(scores.items()))
+        if rejection is None:
+            break
+        if (not exact_camera_fallback
+                and all(view.exact_perspective for view in views)):
+            result.warnings.append(
+                "exact-perspective visual hull rejected (%s); falling back "
+                "to user-supplied relative azimuths" % rejection)
+            views = _azimuth_only_views(views)
+            exact_camera_fallback = True
+            continue
+        result.warnings.append("calibrated visual hull rejected: %s" % rejection)
         return plan, result, False
 
     vertices, faces = _mesh(occupied, ranges)
     updated = plan.model_copy(deep=True)
+    exact_perspective = all(view.exact_perspective for view in views)
     if updated.camera is not None:
-        updated.camera.projection = ProjectionType.ORTHOGRAPHIC
-        updated.camera.notes.append(
-            "calibrated visual hull uses an orthographic camera because only "
-            "relative view azimuths, not full intrinsics/extrinsics, were supplied")
+        if exact_perspective:
+            updated.camera.projection = ProjectionType.PERSPECTIVE
+            updated.camera.notes.append(
+                "calibrated visual hull uses supplied camera intrinsics and "
+                "extrinsics in the primary-camera coordinate frame")
+        else:
+            updated.camera.projection = ProjectionType.ORTHOGRAPHIC
+            updated.camera.notes.append(
+                "calibrated visual hull uses an orthographic camera because only "
+                "relative view azimuths, not full intrinsics/extrinsics, were supplied")
     source_ids = [part.id for part in updated.parts if part.render_visible]
     material = next((part.material.model_copy(deep=True) for part in updated.parts
                      if part.render_visible), None)
@@ -288,6 +400,9 @@ def augment_plan_with_visual_hull(
         "calibrated_view_count": len(views),
         "grid_size": grid,
         "depth_extent": depth,
+        "projection_model": ("exact_perspective" if exact_perspective
+                             else "relative_azimuth_orthographic"),
+        "exact_camera_fallback": exact_camera_fallback,
         "occupied_voxels": int(occupied.sum()),
         "vertex_count": len(vertices),
         "face_count": len(faces),
